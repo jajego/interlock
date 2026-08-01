@@ -1,0 +1,11 @@
+name: Bug report
+description: Report reproducible incorrect behavior
+body:
+  - type: textarea
+    id: reproduction
+    attributes: { label: Reproduction }
+    validations: { required: true }
+  - type: textarea
+    id: versions
+    attributes: { label: Versions }
+    validations: { required: true }

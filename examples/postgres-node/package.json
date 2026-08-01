@@ -1,0 +1,14 @@
+{
+  "name": "@interlock/example-postgres-node",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@interlock/core": "workspace:*",
+    "@interlock/postgres": "workspace:*",
+    "pg": "^8.16.3"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/index.js"
+  }
+}

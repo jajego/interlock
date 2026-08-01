@@ -1,0 +1,14 @@
+{
+  "name": "@interlock/prisma-postgres-spike",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "prisma generate",
+    "start": "tsx index.ts"
+  },
+  "devDependencies": {
+    "@prisma/client": "^6.14.0",
+    "prisma": "^6.14.0",
+    "tsx": "^4.20.4"
+  }
+}

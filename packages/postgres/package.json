@@ -1,0 +1,30 @@
+{
+  "name": "@interlock/postgres",
+  "version": "0.1.0-alpha.0",
+  "type": "module",
+  "license": "Apache-2.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./migration.sql": "./migrations/001_interlock.sql"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "migrations"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@interlock/core": "workspace:^",
+    "pg": "^8.16.3"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --test dist/*.test.js"
+  }
+}
