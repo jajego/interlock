@@ -132,6 +132,24 @@ test("camel-case events are valid and definition errors identify the field", () 
     );
 });
 
+test("prototype property names never resolve as lifecycle events", async () => {
+  const lifecycle = defineLifecycle()({
+    name: "item",
+    states: ["a", "b"],
+    history: { resourceType: "item" },
+    events: { move: { from: ["a"], to: "b" } },
+  });
+  const names = ["toString", "constructor", "__proto__", "hasOwnProperty"];
+  for (const name of names)
+    assert.equal(lifecycle.getEvent(name), undefined, name);
+  const fixture = executorFixture();
+  for (const name of names)
+    assert.deepEqual(
+      await fixture.subject.assess({ id: "item-1", event: name }),
+      { status: "unknown-event", event: name },
+    );
+});
+
 test("validated definitions are stable after caller mutation", () => {
   const definition = {
     name: "item",
@@ -391,12 +409,16 @@ function executorFixture(options = {}) {
       },
     },
     definitionVersion: options.definitionVersion,
-    idempotency: {
-      fingerprint: (...args) =>
-        typeof options.fingerprintCallback === "function"
-          ? options.fingerprintCallback(...args)
-          : "fingerprint",
-    },
+    ...(options.omitIdempotency
+      ? {}
+      : {
+          idempotency: {
+            fingerprint: (...args) =>
+              typeof options.fingerprintCallback === "function"
+                ? options.fingerprintCallback(...args)
+                : "fingerprint",
+          },
+        }),
     events: {
       move: {
         from: ["a"],
@@ -464,7 +486,10 @@ function executorFixture(options = {}) {
             create: (...args) => options.context?.(...args) ?? {},
           },
         }),
-    consistency: { strategy: "none", notes: "fixture" },
+    consistency: options.consistency ?? {
+      strategy: "none",
+      notes: "fixture",
+    },
   };
   const clocks = [
     new Date("2026-01-01T00:00:00.000Z"),
@@ -545,6 +570,56 @@ test("operation context reaches loading, context, and writes immutably", async (
   );
   assert.equal(seen[0][1], seen[1][1]);
   assert.equal(seen[2][1], seen[3][1]);
+});
+
+test("callback envelopes are frozen without deep-freezing application values", async () => {
+  const resource = { id: "item-1", state: "a", version: "1" };
+  const input = { value: "original" };
+  let authorizationArgs;
+  let projectionArgs;
+  const fixture = executorFixture({
+    input: { parse: () => ({ success: true, value: input }) },
+    loadPrimary: async () => resource,
+    authorize: (args) => {
+      authorizationArgs = args;
+      assert.equal(Object.isFrozen(args), true);
+      assert.equal(Object.isFrozen(args.resource), false);
+      assert.throws(() => {
+        args.resource = { id: "malicious", state: "a", version: "1" };
+      }, TypeError);
+      return true;
+    },
+    guards: [
+      {
+        name: "original-values",
+        evaluate: (args) => {
+          assert.equal(args, authorizationArgs);
+          assert.equal(args.resource, resource);
+          assert.equal(args.input, input);
+          return true;
+        },
+      },
+    ],
+    mutate: (args) => {
+      projectionArgs = args;
+      assert.equal(Object.isFrozen(args), true);
+      assert.throws(() => {
+        args.transitionId = "malicious";
+      }, TypeError);
+      return {};
+    },
+    audit: (args) => {
+      assert.equal(args, projectionArgs);
+      assert.equal(args.resource, resource);
+      assert.equal(args.transitionId, "transition-1");
+      return {};
+    },
+  });
+  const result = await fixture.subject.transition({
+    ...transitionRequest,
+    input: {},
+  });
+  assert.equal(result.status, "committed");
 });
 
 test("ordinary transitions default options, context, and mutation", async () => {
@@ -719,20 +794,32 @@ test("history projections and serialization finish before application writes", a
 test("planned JSON and actor identity are snapshotted before writes", async () => {
   const auditData = { value: "planned" };
   const metadata = { value: "planned" };
-  const payload = { value: "planned" };
+  const message = {
+    topic: "planned",
+    key: "planned",
+    payload: { value: "planned" },
+  };
   const actorIdentity = { actorType: "user", actorId: "planned" };
   const fixture = executorFixture({
     audit: () => auditData,
-    metadataCallback: () => metadata,
-    actorIdentity,
-    outbox: () => {
-      void Promise.resolve().then(() => {
-        auditData.value = "mutated";
-        metadata.value = "mutated";
-        payload.value = "mutated";
+    metadataCallback: async () => {
+      await Promise.resolve();
+      return { ...metadata };
+    },
+    actorCallback: () => {
+      globalThis.queueMicrotask(() => {
         actorIdentity.actorId = "mutated";
       });
-      return [{ topic: "probe", payload }];
+      return actorIdentity;
+    },
+    outbox: () => {
+      globalThis.queueMicrotask(() => {
+        auditData.value = "mutated";
+        message.topic = "mutated";
+        message.key = "mutated";
+        message.payload.value = "mutated";
+      });
+      return [message];
     },
   });
 
@@ -741,6 +828,8 @@ test("planned JSON and actor identity are snapshotted before writes", async () =
   assert.equal(fixture.getTransition().auditData.value, "planned");
   assert.equal(fixture.getTransition().metadata.value, "planned");
   assert.equal(fixture.getTransition().actorId, "planned");
+  assert.equal(fixture.getOutbox()[0].topic, "planned");
+  assert.equal(fixture.getOutbox()[0].key, "planned");
   assert.equal(fixture.getOutbox()[0].payload.value, "planned");
 });
 
@@ -1094,6 +1183,22 @@ test("empty idempotency keys are rejected before a transaction", async () => {
     idempotency: { key: "" },
   });
   assert.equal(result.status, "invalid-input");
+  assert.equal(fixture.order.includes("claim"), false);
+});
+
+test("untyped idempotency on an unsupported lifecycle is invalid input", async () => {
+  const fixture = executorFixture({ omitIdempotency: true });
+  const result = await fixture.subject.transition(transitionRequest);
+  assert.deepEqual(result, {
+    status: "invalid-input",
+    issues: [
+      {
+        path: ["idempotency"],
+        code: "IDEMPOTENCY_UNSUPPORTED",
+        message: "This lifecycle does not support idempotency.",
+      },
+    ],
+  });
   assert.equal(fixture.order.includes("claim"), false);
 });
 
@@ -1589,6 +1694,21 @@ test("malformed lifecycle, binding, and driver construction fails stably", () =>
         isInterlockError(error) &&
         error.code === "INTERLOCK_DEFINITION_INVALID",
     );
+});
+
+test("consistency declarations are validated, copied, and frozen", () => {
+  const declaration = { strategy: "custom", notes: "planned" };
+  const fixture = executorFixture({ consistency: () => declaration });
+  const result = fixture.subject.consistency("move");
+  declaration.notes = "mutated";
+  assert.deepEqual(result, { strategy: "custom", notes: "planned" });
+  assert.equal(Object.isFrozen(result), true);
+  assert.throws(
+    () => executorFixture({ consistency: { strategy: "unknown", notes: "x" } }),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+  );
 });
 
 const validDuplicate = {
