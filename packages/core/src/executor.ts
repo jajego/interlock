@@ -4,6 +4,7 @@ import { assertJsonValue, snapshotJsonValue } from "./json.js";
 import type {
   EventMap,
   EventSchemaMap,
+  IdempotencyConfiguration,
   MutationMap,
   Lifecycle,
   ParsedInputOf,
@@ -31,25 +32,35 @@ type InputField<SchemaType> = [SubmittedInputOf<SchemaType>] extends [undefined]
   ? { input?: undefined }
   : { input: SubmittedInputOf<SchemaType> };
 
-interface CommonRequest<Actor> {
+type ActorField<Actor> = [Actor] extends [undefined | void]
+  ? { actor?: undefined }
+  : { actor: Actor };
+
+type IdempotencyField<Enabled extends boolean> = Enabled extends true
+  ? { idempotency?: { key: string } }
+  : { idempotency?: never };
+
+type CommonRequest<Actor> = ActorField<Actor> & {
   id: string;
-  actor: Actor;
   metadata?: JsonValue;
   correlationId?: string;
   causationId?: string;
-}
+};
 
 type EventSchema<Event> = Event extends { input: infer SchemaType }
   ? SchemaType
   : undefined;
 
-export type TransitionRequestFor<Events, Actor> = {
+export type TransitionRequestFor<
+  Events,
+  Actor,
+  SupportsIdempotency extends boolean = boolean,
+> = {
   [Event in EventName<Events>]: CommonRequest<Actor> &
     InputField<EventSchema<Events[Event]>> & {
       event: Event;
       expectedVersion: string | "use-loaded-version";
-      idempotency?: { key: string };
-    };
+    } & IdempotencyField<SupportsIdempotency>;
 }[EventName<Events>];
 
 export type AssessmentRequestFor<Events, Actor> = {
@@ -57,19 +68,87 @@ export type AssessmentRequestFor<Events, Actor> = {
     InputField<EventSchema<Events[Event]>> & { event: Event };
 }[EventName<Events>];
 
-export interface InterlockClient<Resource, Actor, Events> {
+export interface InterlockClient<
+  Resource,
+  Actor,
+  Events,
+  SupportsIdempotency extends boolean = boolean,
+> {
   assess(
     request: AssessmentRequestFor<Events, Actor>,
   ): Promise<AssessmentResult>;
   transition(
-    request: TransitionRequestFor<Events, Actor>,
+    request: TransitionRequestFor<Events, Actor, SupportsIdempotency>,
   ): Promise<TransitionResult<Resource>>;
   consistency(
     event: EventName<Events>,
   ): import("./types.js").RelatedDataConsistency;
 }
 
-interface BoundaryRequest<Actor> extends CommonRequest<Actor> {
+type LifecycleParts<LifecycleValue> =
+  LifecycleValue extends Lifecycle<
+    infer Resource,
+    infer Actor,
+    infer Context,
+    infer Schemas,
+    infer DefinitionMutations,
+    infer Events,
+    infer Idempotency
+  >
+    ? {
+        resource: Resource;
+        actor: Actor;
+        context: Context;
+        schemas: Schemas;
+        definitionMutations: DefinitionMutations;
+        events: Events;
+        idempotency: Idempotency;
+      }
+    : never;
+
+/** Derives a complete binding contract from a lifecycle. */
+export type BindingFor<Transaction, LifecycleValue> =
+  LifecycleParts<LifecycleValue> extends infer Parts
+    ? Parts extends {
+        resource: unknown;
+        actor: unknown;
+        context: unknown;
+        events: Record<string, unknown>;
+      }
+      ? ResourceBinding<
+          Transaction,
+          Parts["resource"],
+          Parts["actor"],
+          Parts["context"],
+          MutationMap<Parts["events"]>
+        >
+      : never
+    : never;
+
+/** Derives the public client type, including actor and idempotency capability. */
+export type ClientFor<LifecycleValue> =
+  LifecycleParts<LifecycleValue> extends infer Parts
+    ? Parts extends {
+        resource: unknown;
+        actor: unknown;
+        events: Record<string, unknown>;
+        idempotency: unknown;
+      }
+      ? InterlockClient<
+          Parts["resource"],
+          Parts["actor"],
+          Parts["events"],
+          [Parts["idempotency"]] extends [undefined] ? false : true
+        >
+      : never
+    : never;
+
+interface BoundaryRequest<Actor> {
+  id: string;
+  actor: Actor;
+  metadata?: JsonValue;
+  correlationId?: string;
+  causationId?: string;
   event: string;
   input?: unknown;
 }
@@ -156,6 +235,7 @@ export function createInterlock<
     Schemas,
     DefinitionMutations
   >,
+  Idempotency extends IdempotencyConfiguration<Actor, Schemas> | undefined,
 >(options: {
   lifecycle: Lifecycle<
     Resource,
@@ -163,7 +243,8 @@ export function createInterlock<
     Context,
     Schemas,
     DefinitionMutations,
-    Events
+    Events,
+    Idempotency
   >;
   driver: TransactionDriver<Transaction>;
   binding: ResourceBinding<
@@ -176,7 +257,12 @@ export function createInterlock<
   ids?: () => string;
   now?: () => Date;
   maxOutboxPayloadBytes?: number;
-}): InterlockClient<Resource, Actor, Events> {
+}): InterlockClient<
+  Resource,
+  Actor,
+  Events,
+  [Idempotency] extends [undefined] ? false : true
+> {
   if (!options || typeof options !== "object")
     throw new InterlockError(
       "INTERLOCK_DEFINITION_INVALID",
@@ -1108,6 +1194,7 @@ export function createInterlock<
           actor: command.actor,
           context,
           input: normalized.input as ParsedInputOf<Schemas[keyof Schemas]>,
+          operation: authoritativeOperation,
           transitionId,
           clock: Object.freeze({ occurredAt }),
         };
