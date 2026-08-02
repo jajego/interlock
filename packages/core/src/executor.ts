@@ -395,7 +395,10 @@ export function createInterlock<
     getState: bindMethod(getState, bindingValue),
     getVersion: bindMethod(getVersion, bindingValue),
     applyPrimary: bindMethod(applyPrimary, bindingValue),
-    consistency,
+    consistency:
+      typeof consistency === "function"
+        ? bindMethod(consistency, bindingValue)
+        : consistency,
     ...(transactionOptionsValue === undefined
       ? {}
       : {
