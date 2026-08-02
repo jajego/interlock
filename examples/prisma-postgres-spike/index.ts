@@ -16,6 +16,7 @@ import {
   type TransitionRecord,
   type VersionToken,
 } from "@interlock/core";
+import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
 
 type Transaction = Prisma.TransactionClient;
@@ -238,7 +239,11 @@ const binding: ResourceBinding<Transaction, Resource, object, object> = {
   consistency: () => ({ strategy: "none", notes: "No related data." }),
 };
 
-const prisma = new PrismaClient();
+const connectionString = process.env.TEST_DATABASE_URL;
+assert.ok(connectionString, "TEST_DATABASE_URL is required");
+const prisma = new PrismaClient({
+  adapter: new PrismaPg({ connectionString }),
+});
 const id = randomUUID();
 try {
   const migration = await readFile(

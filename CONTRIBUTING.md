@@ -1,7 +1,7 @@
 # Contributing
 
-Use Node.js 20+, pnpm 11.9, and PostgreSQL 16. Before submitting a pull request,
-run:
+Use Node.js 24+, pnpm 11.18, and PostgreSQL 16. Before submitting a pull
+request, run:
 
 ```sh
 pnpm install --frozen-lockfile

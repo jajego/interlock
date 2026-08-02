@@ -5,7 +5,7 @@
 - [ ] Create or rename the public repository to `jajego/interlock`.
 - [ ] Enable private vulnerability reporting before advertising that route.
 - [ ] Confirm Actions, issue templates, license, governance, and support pages.
-- [ ] Confirm CI passes on Node.js 20 and 24 with PostgreSQL 16.
+- [ ] Confirm CI passes on Node.js 24 and 26 with PostgreSQL 16.
 
 ## npm
 

@@ -247,7 +247,7 @@ retrying.
 
 The `0.1.0-alpha.0` release tests:
 
-- Node.js 20 and 24;
+- Node.js 24 LTS and Node.js 26 Current;
 - TypeScript 5.0+;
 - PostgreSQL 16;
 - `pg` 8.16.3 through 8.x.
