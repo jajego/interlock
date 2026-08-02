@@ -74,7 +74,7 @@ export function permitConsistency(
       return {
         strategy: "aggregate-version",
         notes:
-          "Actor membership is row-locked; document writes increment the version-checked permit aggregate.",
+          "Actor membership is row-locked; document inserts, updates, deletes, and reassignments increment every affected version-checked permit aggregate.",
       };
     case "beginReview":
       return {

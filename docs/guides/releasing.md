@@ -16,11 +16,13 @@ the workflow does not commit or push source changes.
 ## Later releases
 
 Every change after the first alpha requires a Changeset. Release preparation
-applies those files with `pnpm version-packages`, reviews the resulting package
-versions and changelog, and leaves no pending Changesets before publishing.
-Prereleases continue on `next`; publishing a stable version on `latest` is a
-later, explicit maintainer decision that also requires updating the release
-command.
+applies those files with `pnpm version-packages` and reviews the resulting
+package versions. Changesets does not generate changelogs in this repository;
+maintainers manually update the root `CHANGELOG.md` with an exact release
+heading. `pnpm release:check` verifies that heading and requires no pending
+Changesets before publication. Prereleases continue on `next`; publishing a
+stable version on `latest` is a later, explicit maintainer decision that also
+requires updating the release command.
 
 Confirm ownership and 2FA for the npm `@interlock` scope before configuring the
 protected `npm` GitHub environment. The release workflow repeats format, lint,

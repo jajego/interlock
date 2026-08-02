@@ -225,6 +225,83 @@ test("document removal racing with submission invalidates the observed aggregate
   });
 });
 
+test("document reassignment racing with submission invalidates the source aggregate", async () => {
+  const source = await permit(database, {
+    withDocument: true,
+    permitNumber: 201,
+  });
+  const destination = await permit(database, { permitNumber: 202 });
+  const document = await database.permitDocument.findFirstOrThrow({
+    where: { permitId: source.id },
+  });
+  const release = await hold(async (transaction) => {
+    await transaction.$queryRaw`
+      SELECT id FROM permits WHERE id = ${source.id} FOR UPDATE
+    `;
+    await transaction.permitDocument.update({
+      where: { id: document.id },
+      data: { permitId: destination.id },
+    });
+  });
+  let reachedPrimaryUpdate!: () => void;
+  const primaryUpdateReached = new Promise<void>(
+    (resolve) => (reachedPrimaryUpdate = resolve),
+  );
+  const coordinatedService = createPermitService(database, {
+    observeStatement: (statement) => {
+      if (statement === "primary-update") reachedPrimaryUpdate();
+    },
+  });
+  const pending = coordinatedService.submit(
+    {
+      id: source.id,
+      actor: actors.applicant,
+      expectedVersion: String(source.version),
+      idempotencyKey: "document-move-race",
+    },
+    {},
+  );
+  await primaryUpdateReached;
+  await release();
+
+  const result = await pending;
+  assert.equal(result.status, "conflict");
+  assert.equal(
+    (
+      await database.permitDocument.findUniqueOrThrow({
+        where: { id: document.id },
+      })
+    ).permitId,
+    destination.id,
+  );
+  assert.equal(
+    await database.permitDocument.count({ where: { permitId: source.id } }),
+    0,
+  );
+  assert.equal(
+    await database.permitDocument.count({
+      where: { permitId: destination.id },
+    }),
+    1,
+  );
+  assert.deepEqual(await counts(database, source.id), {
+    state: "draft",
+    version: String(source.version + 1n),
+    decisions: 0,
+    history: 0,
+    outbox: 0,
+    claims: 0,
+  });
+  assert.equal(
+    (
+      await database.permit.findUniqueOrThrow({
+        where: { id: destination.id },
+      })
+    ).version,
+    2n,
+  );
+});
+
 test("candidate membership removal racing with beginReview is authoritative", async () => {
   const row = await permit(database, { state: "submitted" });
   const release = await hold((transaction) =>

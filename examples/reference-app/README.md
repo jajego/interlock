@@ -97,11 +97,13 @@ manual environment, drop the database or run migrations against a fresh one.
 The HTTP membership lookup is an authentication precheck only. Every transition
 re-reads and row-locks the active tenant membership inside the Prisma
 transaction. Submission loads only its document count; document writes bump the
-permit aggregate version. Approval and rejection lock the current assignment.
-Beginning review locks the selected candidate's active membership and requires a
-reviewer or admin role. Other events do not pay for those unrelated reads. The
-previous decorative transaction-local tenant/user settings were removed because
-the schema has no RLS policy consuming them.
+permit aggregate version, and reassignment bumps both source and destination.
+The submission CAS therefore rejects a document snapshot made stale by a move.
+Approval and rejection lock the current assignment. Beginning review locks the
+selected candidate's active membership and requires a reviewer or admin role.
+Other events do not pay for those unrelated reads. The previous decorative
+transaction-local tenant/user settings were removed because the schema has no
+RLS policy consuming them.
 
 Operational failures return a stable Interlock code, generic message, and
 request ID. Full errors and cause chains are written only to structured server
