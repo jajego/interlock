@@ -68,15 +68,33 @@ replays use four statements each after excluding their setup transition.
 ## JSON snapshot microbenchmark
 
 The previous implementation validated and then cloned in separate traversals.
-The final implementation validates and snapshots once, using special handling
-only for `__proto__`. Values are structured objects and arrays, not one large
-string. Results are median mean milliseconds across three runs.
+The first one-pass implementation validated and snapshotted once, using special
+handling only for `__proto__`. Values are structured objects and arrays, not one
+large string. Results are median mean milliseconds across three runs.
 
-| Size   | Two pass | One pass | Change |
-| ------ | -------: | -------: | -----: |
-| 1 KB   |   0.0022 |   0.0012 |   -45% |
-| 64 KB  |   0.1302 |   0.0580 |   -55% |
-| 256 KB |   0.2906 |   0.2106 |   -28% |
+| Size   | Two pass | Initial one pass | Change |
+| ------ | -------: | ---------------: | -----: |
+| 1 KB   |   0.0022 |           0.0012 |   -45% |
+| 64 KB  |   0.1302 |           0.0580 |   -55% |
+| 256 KB |   0.2906 |           0.2106 |   -28% |
+
+### Lazy error paths
+
+A follow-up benchmark compared the original one-pass snapshot, which allocated
+an error-path string for every visited value, with a mutable segment stack that
+formats paths only on failure. Seven-run median means showed:
+
+| Runtime    |   Size | Path strings | Path stack | Change |
+| ---------- | -----: | -----------: | ---------: | -----: |
+| Node 26.5  |   1 KB |       0.0011 |     0.0009 |   -18% |
+| Node 26.5  |  64 KB |       0.0592 |     0.0370 |   -37% |
+| Node 26.5  | 256 KB |       0.2766 |     0.1885 |   -32% |
+| Node 22.14 |   1 KB |       0.0019 |     0.0014 |   -26% |
+| Node 22.14 |  64 KB |       0.0856 |     0.0325 |   -62% |
+| Node 22.14 | 256 KB |       0.1715 |     0.1297 |   -24% |
+
+The implementation also preallocates arrays. Error messages and paths remain
+unchanged.
 
 ## Larger evaluations
 
@@ -133,6 +151,12 @@ Explicitly rejected:
 - removing the occurrence-time history index, due a materially worse plan;
 - guard parallelism, caches, retries, unsafe modes, fingerprint changes, and
   other unmeasured hot-path refactors.
+- one-pass `canonicalHash()` for now: seven-run Node 26 medians improved 1 KB by
+  14%, regressed 64 KB by 11%, and improved 256 KB by only 2%; Node 22 gains
+  were also uneven. The result was not consistent enough across supported
+  runtimes.
+- pre-serialized driver payloads, prepared statements, outbox SQL-shape caches,
+  and renewed consolidated-persistence work without better end-to-end evidence.
 
 There are no public API changes and no new dependencies. Package sizes and the
 complete command matrix are reported in the release handoff rather than treated

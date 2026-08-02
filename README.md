@@ -278,6 +278,11 @@ Rejected promises remain failures for that operation. Cross-request caching is
 outside Interlock, and guards remain sequential for ordering and short-circuit
 behavior.
 
+For production latency, keep the application and PostgreSQL close, reuse one
+warm `pg.Pool`, and size it for database capacity rather than incoming request
+concurrency. Batch related writes in the binding, keep outbox payloads small,
+and store references instead of large blobs when practical.
+
 Expected outcomes after an idempotency claim force rollback before being
 returned. A same-key duplicate returns the stored transition identity without
 rerunning current policy or exposing a potentially unrelated current resource.

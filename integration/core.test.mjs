@@ -606,19 +606,25 @@ test("JSON snapshots detach nested values without prototype mutation", async () 
 });
 
 test("JSON snapshot failures retain the nested value path", async () => {
-  const fixture = executorFixture({
-    outbox: () => [
-      { topic: "invalid", payload: { nested: [{ invalid: undefined }] } },
-    ],
-  });
-  await assert.rejects(
-    fixture.subject.transition(transitionRequest),
-    (error) =>
-      isInterlockError(error) &&
-      error.code === "INTERLOCK_SERIALIZATION_FAILED" &&
-      error.cause?.message === "$.nested[0].invalid is undefined",
-  );
-  assert.equal(fixture.order.includes("apply"), false);
+  const cyclic = {};
+  cyclic.self = cyclic;
+  for (const [payload, message] of [
+    [{ nested: [{ invalid: undefined }] }, "$.nested[0].invalid is undefined"],
+    [{ nested: [new Date()] }, "$.nested[0] is not JSON-safe"],
+    [{ nested: cyclic }, "$.nested.self is cyclic"],
+  ]) {
+    const fixture = executorFixture({
+      outbox: () => [{ topic: "invalid", payload }],
+    });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_SERIALIZATION_FAILED" &&
+        error.cause?.message === message,
+    );
+    assert.equal(fixture.order.includes("apply"), false);
+  }
 });
 
 test("top-level request identity is snapshotted before asynchronous parsing", async () => {

@@ -27,6 +27,12 @@ function once<T>(load: () => Promise<T>): () => Promise<T> {
 Create it inside one context factory call. A rejected promise remains a failure
 for that operation; do not turn it into a global or cross-request cache.
 
+Keep PostgreSQL in the same region or availability zone as the application and
+reuse one warm `pg.Pool`. Size the pool against measured database capacity, not
+HTTP concurrency. Bindings should batch related writes where ordinary SQL can do
+so, and outbox messages should normally reference large blobs rather than
+embedding them.
+
 The migration creates objects in the active schema and wraps a clean install in
 one transaction. Use a dedicated schema or migration role with a deliberate
 `search_path`. Existing incompatible tables are not upgraded in place.

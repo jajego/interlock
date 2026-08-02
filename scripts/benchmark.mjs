@@ -10,6 +10,7 @@ import {
   createInterlock,
   defineLifecycle,
 } from "../packages/core/dist/index.js";
+import { snapshotJsonValue as productionSnapshot } from "../packages/core/dist/json.js";
 import { PostgresDriver } from "../packages/postgres/dist/index.js";
 
 const connectionString =
@@ -426,10 +427,12 @@ function onePassSnapshot(value, path = "$", ancestors = new WeakSet()) {
 function jsonBenchmark() {
   return [1_024, 65_536, 262_144].flatMap((bytes) => {
     const value = payload(bytes);
+    assert.deepEqual(productionSnapshot(value), onePassSnapshot(value));
     const runs = Math.max(20, Math.floor(2_000_000 / bytes));
     return [
       ["two-pass", oldSnapshot],
-      ["one-pass", onePassSnapshot],
+      ["one-pass-path-string", onePassSnapshot],
+      ["one-pass-path-stack", productionSnapshot],
     ].map(([implementation, snapshot]) => {
       for (let index = 0; index < 5; index += 1) snapshot(value);
       const started = performance.now();
