@@ -39,31 +39,44 @@ interface PgFailure extends Error {
   code?: string;
 }
 
+function failureChain(error: unknown): PgFailure[] {
+  const failures: PgFailure[] = [];
+  const seen = new Set<unknown>();
+  let current = error;
+  while (
+    current &&
+    (typeof current === "object" || typeof current === "function") &&
+    !seen.has(current)
+  ) {
+    seen.add(current);
+    failures.push(current as PgFailure);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return failures;
+}
+
 function connectionFailure(error: unknown): Error | undefined {
-  if (!(error instanceof Error)) return undefined;
-  const failure = error as PgFailure;
-  if (
-    failure.code?.startsWith("08") ||
-    /connection (?:terminated|lost|closed)/i.test(error.message)
-  )
-    return error;
-  return connectionFailure(error.cause);
+  return failureChain(error).find(
+    (failure) =>
+      failure instanceof Error &&
+      (failure.code?.startsWith("08") ||
+        /connection (?:terminated|lost|closed)/i.test(failure.message)),
+  );
 }
 
 export function normalizePostgresError(
   error: unknown,
   duringCommit = false,
 ): InterlockError {
-  if (isInterlockError(error)) return error;
-  const failure =
-    error && (typeof error === "object" || typeof error === "function")
-      ? (error as PgFailure)
-      : undefined;
+  const failures = failureChain(error);
+  const failure = failures[0];
+  const connection = failures.find(
+    (candidate) =>
+      candidate.code?.startsWith("08") || candidate.code === "57P01",
+  );
   if (
     duringCommit &&
-    (!failure?.code ||
-      failure.code.startsWith("08") ||
-      failure.code === "57P01")
+    (connection || (!isInterlockError(error) && !failure?.code))
   ) {
     return new InterlockError(
       "INTERLOCK_COMMIT_OUTCOME_UNKNOWN",
@@ -83,14 +96,17 @@ export function normalizePostgresError(
     "55P03": ["INTERLOCK_LOCK_TIMEOUT", "PostgreSQL lock timeout."],
     "57014": ["INTERLOCK_CANCELLED", "PostgreSQL operation cancelled."],
   };
-  const mapped = failure?.code ? codes[failure.code] : undefined;
-  return mapped
-    ? new InterlockError(mapped[0], mapped[1], { cause: error })
-    : new InterlockError(
-        "INTERLOCK_TRANSACTION_FAILED",
-        "PostgreSQL transaction failed.",
-        { cause: error },
-      );
+  const mappedFailure = failures.find(
+    (candidate) => candidate.code && codes[candidate.code],
+  );
+  const mapped = mappedFailure?.code ? codes[mappedFailure.code] : undefined;
+  if (mapped) return new InterlockError(mapped[0], mapped[1], { cause: error });
+  if (isInterlockError(error)) return error;
+  return new InterlockError(
+    "INTERLOCK_TRANSACTION_FAILED",
+    "PostgreSQL transaction failed.",
+    { cause: error },
+  );
 }
 
 function beginSql(options: TransactionOptions): string {
