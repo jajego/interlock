@@ -95,6 +95,88 @@ test("transaction and consistency declarations use one validated read", async ()
   });
 });
 
+test("function consistency retains object and class binding receivers", () => {
+  const objectFixture = executorFixture({
+    bindingFactory(binding) {
+      binding.consistencyNote = "Rows are locked";
+      binding.consistency = function () {
+        return { strategy: "row-locking", notes: this.consistencyNote };
+      };
+      return binding;
+    },
+  });
+  assert.deepEqual(objectFixture.subject.consistency("move"), {
+    strategy: "row-locking",
+    notes: "Rows are locked",
+  });
+
+  class Binding {
+    #note = "Instance rows are locked";
+    constructor(binding) {
+      this.binding = binding;
+    }
+    transactionOptions(...args) {
+      return this.binding.transactionOptions(...args);
+    }
+    loadPrimary(...args) {
+      return this.binding.loadPrimary(...args);
+    }
+    getId(...args) {
+      return this.binding.getId(...args);
+    }
+    getState(...args) {
+      return this.binding.getState(...args);
+    }
+    getVersion(...args) {
+      return this.binding.getVersion(...args);
+    }
+    applyPrimary(...args) {
+      return this.binding.applyPrimary(...args);
+    }
+    consistency() {
+      return { strategy: "row-locking", notes: this.#note };
+    }
+  }
+  const classFixture = executorFixture({
+    bindingFactory: (binding) => new Binding(binding),
+  });
+  assert.deepEqual(classFixture.subject.consistency("move"), {
+    strategy: "row-locking",
+    notes: "Instance rows are locked",
+  });
+});
+
+test("consistency is captured once and malformed function results fail", () => {
+  let reads = 0;
+  const fixture = executorFixture({
+    bindingFactory(binding) {
+      Object.defineProperty(binding, "consistency", {
+        get() {
+          reads += 1;
+          return reads === 1
+            ? function () {
+                return { strategy: "custom", notes: "captured" };
+              }
+            : null;
+        },
+      });
+      return binding;
+    },
+  });
+  assert.deepEqual(fixture.subject.consistency("move"), {
+    strategy: "custom",
+    notes: "captured",
+  });
+  assert.equal(reads, 1);
+  assert.throws(
+    () =>
+      executorFixture({
+        consistency: () => ({ strategy: "invalid" }),
+      }).subject.consistency("move"),
+    (error) => error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+  );
+});
+
 test("authorization and denial fields are snapshotted once", async () => {
   const denial = Object.defineProperties(
     {},

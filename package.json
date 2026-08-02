@@ -21,7 +21,8 @@
     "pack:check": "node scripts/pack-check.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
-    "release": "changeset publish --tag next"
+    "release:check": "node scripts/release-check.mjs",
+    "release": "pnpm release:check && changeset publish --tag next"
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.1",

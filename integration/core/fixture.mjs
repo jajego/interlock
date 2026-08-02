@@ -142,7 +142,7 @@ export function executorFixture(options = {}) {
   const subject = createInterlock({
     lifecycle: defineLifecycle()(definition),
     driver: options.driver ?? driver,
-    binding,
+    binding: options.bindingFactory?.(binding) ?? binding,
     now:
       options.now ??
       (() => {
