@@ -3,6 +3,7 @@ import type {
   Decision,
   InputSchema,
   JsonValue,
+  InterlockOperation,
   ParseResult,
   Schema,
   StandardSchema,
@@ -13,6 +14,7 @@ export interface ProjectionArgs<Resource, Actor, Context, Input> {
   actor: Actor;
   context: Context;
   input: Input;
+  operation: InterlockOperation<Actor>;
   transitionId: string;
   clock: { occurredAt: Date };
 }
@@ -171,34 +173,73 @@ export interface LifecycleDefinition<
   };
 }
 
-export interface Lifecycle<
+export type IdempotencyConfiguration<Actor, Schemas extends EventSchemaMap> = {
+  fingerprint(args: {
+    lifecycle: string;
+    resourceId: string;
+    event: string;
+    parsedInput: ParsedInputOf<Schemas[keyof Schemas]>;
+    actor: Actor;
+    expectedVersion: string;
+  }): string;
+};
+
+export type Lifecycle<
   Resource,
   Actor,
   Context,
   Schemas extends EventSchemaMap,
   Mutations extends { [Event in keyof Schemas]: unknown },
   Events extends Record<string, unknown>,
-> extends Omit<
+  Idempotency = IdempotencyConfiguration<Actor, Schemas> | undefined,
+> = Omit<
   LifecycleDefinition<Resource, Actor, Context, Schemas, Mutations>,
-  "events"
-> {
-  events: Events;
-  getEvent(
-    name: string,
-  ):
-    | EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
+  "events" | "idempotency"
+> &
+  ([Idempotency] extends [undefined]
+    ? { readonly idempotency?: undefined }
+    : { readonly idempotency: Idempotency }) & {
+    events: Events;
+    getEvent(
+      name: string,
+    ):
+      | EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
+          keyof Schemas,
+          string
+        >]
+      | undefined;
+    parseInput(
+      event: EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
         keyof Schemas,
         string
-      >]
-    | undefined;
-  parseInput(
-    event: EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
-      keyof Schemas,
-      string
-    >],
-    input: unknown,
-  ): Promise<ParseResult<unknown>>;
-}
+      >],
+      input: unknown,
+    ): Promise<ParseResult<unknown>>;
+  };
+
+type LifecycleShape = {
+  readonly states: readonly string[];
+  readonly events: Record<string, unknown>;
+};
+
+type StateConstrainedEvents<Definition extends LifecycleShape> = {
+  readonly events: {
+    readonly [
+      Event in keyof Definition["events"]
+    ]: Definition["events"][Event] & {
+      readonly from: readonly Definition["states"][number][];
+      readonly to: Definition["states"][number];
+    };
+  };
+};
+
+type DefinitionIdempotency<
+  Actor,
+  Schemas extends EventSchemaMap,
+  Definition extends LifecycleShape,
+> = Definition extends { readonly idempotency: infer Idempotency }
+  ? Idempotency & IdempotencyConfiguration<Actor, Schemas>
+  : undefined;
 
 function normalizePath(
   path: ReadonlyArray<PropertyKey | { key: PropertyKey }> | undefined,
@@ -424,7 +465,7 @@ export function defineLifecycle<
 >(): <
   const Schemas extends EventSchemaMap,
   const Mutations extends { [Event in keyof Schemas]: unknown },
-  const Definition extends { readonly events: Record<string, unknown> },
+  const Definition extends LifecycleShape,
 >(
   definition: LifecycleDefinition<
     Resource,
@@ -433,14 +474,16 @@ export function defineLifecycle<
     Schemas,
     Mutations
   > &
-    Definition,
+    Definition &
+    StateConstrainedEvents<Definition>,
 ) => Lifecycle<
   Resource,
   Actor,
   Context,
   Schemas,
   Mutations,
-  Definition["events"]
+  Definition["events"],
+  DefinitionIdempotency<Actor, Schemas, Definition>
 >;
 export function defineLifecycle<
   Resource,
@@ -448,7 +491,7 @@ export function defineLifecycle<
   Context,
   const Schemas extends EventSchemaMap,
   const Mutations extends { [Event in keyof Schemas]: unknown },
-  const Definition extends { readonly events: Record<string, unknown> },
+  const Definition extends LifecycleShape,
 >(
   definition: LifecycleDefinition<
     Resource,
@@ -457,14 +500,16 @@ export function defineLifecycle<
     Schemas,
     Mutations
   > &
-    Definition,
+    Definition &
+    StateConstrainedEvents<Definition>,
 ): Lifecycle<
   Resource,
   Actor,
   Context,
   Schemas,
   Mutations,
-  Definition["events"]
+  Definition["events"],
+  DefinitionIdempotency<Actor, Schemas, Definition>
 >;
 export function defineLifecycle<
   Resource,
@@ -472,7 +517,7 @@ export function defineLifecycle<
   Context,
   const Schemas extends EventSchemaMap,
   const Mutations extends { [Event in keyof Schemas]: unknown },
-  const Definition extends { readonly events: Record<string, unknown> },
+  const Definition extends LifecycleShape,
 >(
   definition?: LifecycleDefinition<
     Resource,
@@ -489,20 +534,24 @@ export function defineLifecycle<
       Context,
       Schemas,
       Mutations,
-      Definition["events"]
+      Definition["events"],
+      DefinitionIdempotency<Actor, Schemas, Definition>
     >
   | ((
       value: LifecycleDefinition<Resource, Actor, Context, Schemas, Mutations> &
-        Definition,
+        Definition &
+        StateConstrainedEvents<Definition>,
     ) => Lifecycle<
       Resource,
       Actor,
       Context,
       Schemas,
       Mutations,
-      Definition["events"]
+      Definition["events"],
+      DefinitionIdempotency<Actor, Schemas, Definition>
     >) {
-  if (definition === undefined) return (value) => defineLifecycle(value);
+  if (definition === undefined)
+    return ((value: unknown) => defineLifecycle(value as never)) as never;
   if (!definition || typeof definition !== "object")
     invalid("Lifecycle definition is invalid.");
   if (!/^[a-z][a-z0-9_-]*$/.test(definition.name))
@@ -562,16 +611,20 @@ export function defineLifecycle<
     eventEntries.map(([name, event]) => {
       if (!event || typeof event !== "object")
         invalid(`Event ${name} is invalid.`);
-      if (
-        !/^[a-z][a-z0-9_-]*$/.test(name) ||
-        !Array.isArray(event.from) ||
-        (event.guards !== undefined && !Array.isArray(event.guards)) ||
-        event.from.length === 0 ||
-        new Set(event.from).size !== event.from.length ||
-        !states.has(event.to) ||
-        event.from.some((state) => !states.has(state) || state === event.to)
-      )
-        invalid(`Event ${name} has invalid states.`);
+      if (!name || name.length > 128)
+        invalid("Event names must contain 1 to 128 characters.");
+      if (!Array.isArray(event.from) || event.from.length === 0)
+        invalid(`Event ${name} must have at least one source state.`);
+      if (new Set(event.from).size !== event.from.length)
+        invalid(`Event ${name} has duplicate source states.`);
+      if (event.from.some((state) => !states.has(state)))
+        invalid(`Event ${name} has an unknown source state.`);
+      if (!states.has(event.to))
+        invalid(`Event ${name} has an unknown target state.`);
+      if (event.from.includes(event.to))
+        invalid(`Event ${name} cannot transition a state to itself.`);
+      if (event.guards !== undefined && !Array.isArray(event.guards))
+        invalid(`Event ${name} guards must be an array.`);
       if (event.guards?.some((guard) => !guard || typeof guard !== "object"))
         invalid(`Event ${name} has invalid guards.`);
       const guards = event.guards?.map((guard) => guard.name) ?? [];
@@ -628,14 +681,7 @@ export function defineLifecycle<
     }),
   ) as Definition["events"];
 
-  const lifecycle: Lifecycle<
-    Resource,
-    Actor,
-    Context,
-    Schemas,
-    Mutations,
-    Definition["events"]
-  > = {
+  const lifecycle = {
     ...definition,
     states: Object.freeze([...definition.states]),
     events: Object.freeze(events),
@@ -643,14 +689,36 @@ export function defineLifecycle<
     ...(definition.idempotency
       ? { idempotency: Object.freeze({ ...definition.idempotency }) }
       : {}),
-    getEvent: (name) =>
+    getEvent: (name: string) =>
       events[name as keyof Definition["events"]] as unknown as
         | EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
             keyof Schemas,
             string
           >]
         | undefined,
-    parseInput: (event, input) => parseSchema(event.input, input),
-  };
-  return Object.freeze(lifecycle);
+    parseInput: (
+      event: EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
+        keyof Schemas,
+        string
+      >],
+      input: unknown,
+    ) => parseSchema(event.input, input),
+  } as unknown as Lifecycle<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    Mutations,
+    Definition["events"],
+    DefinitionIdempotency<Actor, Schemas, Definition>
+  >;
+  return Object.freeze(lifecycle) as Lifecycle<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    Mutations,
+    Definition["events"],
+    DefinitionIdempotency<Actor, Schemas, Definition>
+  >;
 }
