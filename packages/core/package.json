@@ -1,8 +1,29 @@
 {
   "name": "@interlock/core",
   "version": "0.1.0-alpha.0",
+  "description": "Type-safe lifecycle definitions and atomic transition executor contracts.",
   "type": "module",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jajego/protolife.git",
+    "directory": "packages/core"
+  },
+  "bugs": {
+    "url": "https://github.com/jajego/protolife/issues"
+  },
+  "homepage": "https://github.com/jajego/protolife#readme",
+  "keywords": [
+    "postgresql",
+    "transactions",
+    "idempotency",
+    "outbox",
+    "lifecycle"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "engines": {
     "node": ">=20"
   },
@@ -14,11 +35,12 @@
   },
   "types": "./dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "sideEffects": false,
   "scripts": {
-    "build": "tsc -b",
-    "test": "node --test dist/*.test.js"
+    "build": "tsc -b"
   }
 }

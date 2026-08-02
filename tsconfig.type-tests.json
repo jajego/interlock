@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "composite": false },
+  "include": ["type-tests/**/*.ts"],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/postgres" },
+    { "path": "examples/postgres-node" }
+  ]
+}

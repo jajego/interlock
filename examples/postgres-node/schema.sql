@@ -10,6 +10,20 @@ CREATE TABLE application_documents (
   application_id TEXT NOT NULL REFERENCES applications(id),
   verified BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+CREATE FUNCTION bump_application_version_for_document() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  UPDATE applications
+  SET version = version + 1
+  WHERE id = COALESCE(NEW.application_id, OLD.application_id);
+  RETURN COALESCE(NEW, OLD);
+END;
+$$;
+
+CREATE TRIGGER application_documents_bump_version
+AFTER INSERT OR UPDATE OR DELETE ON application_documents
+FOR EACH ROW EXECUTE FUNCTION bump_application_version_for_document();
 CREATE TABLE application_decisions (
   id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
   application_id TEXT NOT NULL REFERENCES applications(id),

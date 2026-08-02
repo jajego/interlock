@@ -38,6 +38,17 @@ interface PgFailure extends Error {
   code?: string;
 }
 
+function connectionFailure(error: unknown): Error | undefined {
+  if (!(error instanceof Error)) return undefined;
+  const failure = error as PgFailure;
+  if (
+    failure.code?.startsWith("08") ||
+    /connection (?:terminated|lost|closed)/i.test(error.message)
+  )
+    return error;
+  return connectionFailure(error.cause);
+}
+
 export function normalizePostgresError(
   error: unknown,
   duringCommit = false,
@@ -130,8 +141,14 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
     options: TransactionOptions = {},
   ): Promise<Result> {
     const client = await this.pool.connect();
+    let emittedFailure: Error | undefined;
+    const captureFailure = (error: Error) => {
+      emittedFailure = error;
+    };
+    client.on("error", captureFailure);
     const transaction = new ScopedTransaction(client);
     let committing = false;
+    let releaseFailure: Error | undefined;
     try {
       await client.query(beginSql(options));
       const result = await operation(transaction);
@@ -140,6 +157,7 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
       await client.query("COMMIT");
       return result;
     } catch (error) {
+      releaseFailure = connectionFailure(error);
       transaction.active = false;
       if (!committing) {
         try {
@@ -151,7 +169,8 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
       }
       throw normalizePostgresError(error, committing);
     } finally {
-      client.release();
+      client.release(releaseFailure ?? emittedFailure);
+      client.off("error", captureFailure);
     }
   }
 

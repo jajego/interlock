@@ -1,5 +1,5 @@
 # Changelog
 
-## 0.1.0-alpha.0
+## Unreleased
 
-- Initial public alpha implementation.
+- Internal prototype; not published.

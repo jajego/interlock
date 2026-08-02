@@ -5,12 +5,20 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: npm
+    env:
+      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with: { version: 10.15.0 }
+        with: { version: 11.9.0 }
       - uses: actions/setup-node@v4
         with: { node-version: 20, registry-url: "https://registry.npmjs.org" }
       - run: pnpm install --frozen-lockfile
+      - run: pnpm format
+      - run: pnpm lint
       - run: pnpm check
-      - run: pnpm -r publish --provenance --access public
+      - run: pnpm test:postgres
+      - run: pnpm pack:check
+      - run: pnpm --filter @interlock/prisma-postgres-spike generate
+      - run: pnpm --filter @interlock/prisma-postgres-spike start
+      - run: pnpm release

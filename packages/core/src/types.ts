@@ -124,6 +124,11 @@ export type IdempotencyClaimResult =
   | { status: "duplicate"; transition: TransitionRecord };
 
 export interface TransactionDriver<Transaction> {
+  /**
+   * Rolls back for every thrown value. Values used for caller-controlled
+   * rollback must be rethrown unchanged; operational failures must be exposed
+   * as InterlockError instances.
+   */
   transaction<Result>(
     operation: (transaction: Transaction) => Promise<Result>,
     options?: TransactionOptions,
@@ -225,8 +230,18 @@ export type TransitionResult<Resource> =
   | { status: "idempotency-conflict"; key: string };
 
 export type AssessmentResult =
-  | Exclude<
-      TransitionResult<never>,
-      { status: "committed" } | { status: "idempotency-conflict" }
-    >
-  | { status: "allowed"; currentState: string; targetState: string };
+  | {
+      status: "allowed";
+      currentState: string;
+      targetState: string;
+    }
+  | {
+      status: "denied";
+      event: string;
+      currentState: string;
+      targetState?: string;
+      reasons: readonly Denial[];
+    }
+  | { status: "not-found" }
+  | { status: "unknown-event"; event: string }
+  | { status: "invalid-input"; issues: readonly InputIssue[] };

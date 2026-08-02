@@ -6,6 +6,7 @@ import {
   allow,
   type InputSchema,
   type ResourceBinding,
+  type TransactionDriver,
   type VersionToken,
 } from "@interlock/core";
 import { PostgresDriver, type PgTransaction } from "@interlock/postgres";
@@ -29,9 +30,10 @@ interface Mutation {
   decisionNote: string | null;
 }
 
-const noteSchema: InputSchema<unknown, { note?: string }> = {
+const noteSchema: InputSchema<{ note?: string }, { note?: string }> = {
   parse(input) {
-    if (typeof input !== "object" || input === null)
+    const submitted: unknown = input;
+    if (typeof submitted !== "object" || submitted === null)
       return {
         success: false,
         issues: [
@@ -42,7 +44,7 @@ const noteSchema: InputSchema<unknown, { note?: string }> = {
           },
         ],
       };
-    const note = Reflect.get(input, "note");
+    const note = (submitted as Record<string, unknown>).note;
     if (note !== undefined && (typeof note !== "string" || note.length > 2_000))
       return {
         success: false,
@@ -76,7 +78,7 @@ export const applicationLifecycle = defineLifecycle<
       canonicalHash({
         resourceId,
         event,
-        input: parsedInput as never,
+        input: parsedInput,
         actorId: actor.id,
         expectedVersion,
       }),
@@ -99,12 +101,8 @@ export const applicationLifecycle = defineLifecycle<
               : deny({ code: "DOCUMENTS_NOT_VERIFIED" }),
         },
       ],
-      mutate: ({ input }) => ({
-        decisionNote: (input as { note?: string }).note ?? null,
-      }),
-      audit: ({ input }) => ({
-        noteProvided: (input as { note?: string }).note !== undefined,
-      }),
+      mutate: ({ input }) => ({ decisionNote: input.note ?? null }),
+      audit: ({ input }) => ({ noteProvided: input.note !== undefined }),
       outbox: ({ resource, transitionId }) => [
         {
           topic: "application.approved",
@@ -121,9 +119,7 @@ export const applicationLifecycle = defineLifecycle<
         actor.permissions.includes("applications:reject")
           ? allow()
           : deny({ code: "MISSING_PERMISSION" }),
-      mutate: ({ input }) => ({
-        decisionNote: (input as { note?: string }).note ?? null,
-      }),
+      mutate: ({ input }) => ({ decisionNote: input.note ?? null }),
     },
   },
 });
@@ -184,14 +180,9 @@ export const applicationBinding: ResourceBinding<
     );
   },
   contextFactory: {
-    create: (tx, { mode }) => ({
+    create: (tx) => ({
       documents: {
         allVerified: async (id) => {
-          if (mode === "authoritative")
-            await tx.query(
-              "SELECT id FROM application_documents WHERE application_id = $1 FOR UPDATE",
-              [id],
-            );
           const result = await tx.query<{ count: string }>(
             "SELECT count(*)::text AS count FROM application_documents WHERE application_id = $1 AND NOT verified",
             [id],
@@ -204,8 +195,9 @@ export const applicationBinding: ResourceBinding<
   consistency: (event) =>
     event === "approve"
       ? {
-          strategy: "row-locking",
-          notes: "Document rows are locked for authoritative approval.",
+          strategy: "aggregate-version",
+          notes:
+            "Database triggers increment the application version for every document insert, update, or delete; approval checks that version.",
         }
       : {
           strategy: "none",
@@ -213,10 +205,13 @@ export const applicationBinding: ResourceBinding<
         },
 };
 
-export function createApplications(pool: Pool) {
+export function createApplications(
+  pool: Pool,
+  driver: TransactionDriver<PgTransaction> = new PostgresDriver(pool),
+) {
   return createInterlock({
     lifecycle: applicationLifecycle,
-    driver: new PostgresDriver(pool),
+    driver,
     binding: applicationBinding,
   });
 }
@@ -231,7 +226,7 @@ async function main() {
         event: "approve",
         input: { note: "Ready" },
         actor: { id: "reviewer", permissions: ["applications:approve"] },
-        expectedVersion: "1",
+        expectedVersion: "2",
         idempotency: { key: "example-approve" },
       }),
     );
