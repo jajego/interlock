@@ -4,6 +4,7 @@ import { assertJsonValue, snapshotJsonValue } from "./json.js";
 import type {
   EventMap,
   EventSchemaMap,
+  FingerprintArgs,
   IdempotencyConfiguration,
   MutationMap,
   Lifecycle,
@@ -16,6 +17,7 @@ import type {
   InterlockOperation,
   OutboxInsert,
   PublicDenial,
+  RelatedDataConsistency,
   ResourceBinding,
   TransactionDriver,
   TransitionRecord,
@@ -68,6 +70,7 @@ export type AssessmentRequestFor<Events, Actor> = {
     InputField<EventSchema<Events[Event]>> & { event: Event };
 }[EventName<Events>];
 
+/** Typed advisory and authoritative operations for one lifecycle binding. */
 export interface InterlockClient<
   Resource,
   Actor,
@@ -342,6 +345,38 @@ export function createInterlock<
   const ids = options.ids ?? randomUUID;
   const now = options.now ?? (() => new Date());
   const maxOutboxPayloadBytes = options.maxOutboxPayloadBytes ?? 256_000;
+  const consistencyValue = (
+    value: unknown,
+    label: string,
+  ): RelatedDataConsistency => {
+    const strategies = new Set([
+      "none",
+      "row-locking",
+      "aggregate-version",
+      "dependency-version",
+      "serializable",
+      "database-constraint",
+      "custom",
+    ]);
+    if (
+      !record(value) ||
+      typeof value.strategy !== "string" ||
+      !strategies.has(value.strategy) ||
+      !nonempty(value.notes)
+    )
+      throw new InterlockError(
+        "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+        `${label} consistency declaration is invalid.`,
+      );
+    return Object.freeze({
+      strategy: value.strategy as RelatedDataConsistency["strategy"],
+      notes: value.notes,
+    });
+  };
+  const staticConsistency =
+    typeof binding.consistency === "function"
+      ? undefined
+      : consistencyValue(binding.consistency, "Binding");
   const allocateId = (label: string): string => {
     let id: unknown;
     try {
@@ -798,6 +833,20 @@ export function createInterlock<
           ],
         },
       };
+    if (request.idempotency && !lifecycle.idempotency)
+      return {
+        ok: false,
+        result: {
+          status: "invalid-input",
+          issues: [
+            {
+              path: ["idempotency"],
+              code: "IDEMPOTENCY_UNSUPPORTED",
+              message: "This lifecycle does not support idempotency.",
+            },
+          ],
+        },
+      };
     let expectedVersion: VersionExpectation;
     if (request.expectedVersion === "use-loaded-version")
       expectedVersion = request.expectedVersion;
@@ -819,13 +868,11 @@ export function createInterlock<
         ? lifecycle.idempotency?.fingerprint({
             lifecycle: lifecycle.name,
             resourceId: request.id,
-            event: request.event,
-            parsedInput: normalized.input as ParsedInputOf<
-              Schemas[keyof Schemas]
-            >,
+            event: request.event as Extract<keyof Schemas, string>,
+            parsedInput: normalized.input,
             actor: request.actor,
             expectedVersion,
-          })
+          } as FingerprintArgs<Actor, Schemas>)
         : undefined;
     } catch (error) {
       throw operational(
@@ -839,8 +886,8 @@ export function createInterlock<
       (typeof fingerprint !== "string" || fingerprint.length === 0)
     )
       throw new InterlockError(
-        "INTERLOCK_DEFINITION_INVALID",
-        "Idempotency requires a fingerprint projection.",
+        "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+        "Idempotency fingerprint must return a non-empty string.",
       );
     return { ...normalized, expectedVersion, fingerprint };
   }
@@ -856,12 +903,12 @@ export function createInterlock<
   ): Promise<PublicDenial | undefined> {
     if (!event.from.includes(state))
       return { source: "state", code: "INVALID_SOURCE_STATE" };
-    const args = {
+    const args = Object.freeze({
       resource,
       actor,
       context,
       input: input as ParsedInputOf<Schemas[keyof Schemas]>,
-    };
+    });
     let authorization;
     try {
       if (!event.authorize) authorization = undefined;
@@ -1189,7 +1236,7 @@ export function createInterlock<
             );
         };
         const transitionId = allocateId("Transition");
-        const projection = {
+        const projection = Object.freeze({
           resource,
           actor: command.actor,
           context,
@@ -1197,7 +1244,7 @@ export function createInterlock<
           operation: authoritativeOperation,
           transitionId,
           clock: Object.freeze({ occurredAt }),
-        };
+        });
         let mutation;
         try {
           const projected = normalized.event.mutate?.(projection);
@@ -1259,6 +1306,31 @@ export function createInterlock<
           );
         assertBoundary();
         assertClock();
+        const plannedDescriptors = descriptors.map((descriptor) => {
+          if (
+            !record(descriptor) ||
+            typeof descriptor.topic !== "string" ||
+            descriptor.topic.length === 0 ||
+            (descriptor.key !== undefined && typeof descriptor.key !== "string")
+          )
+            throw new InterlockError(
+              "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+              "Outbox descriptors require a topic and optional string key.",
+            );
+          const payload = snapshotJson(descriptor.payload, "Outbox payload");
+          if (
+            Buffer.byteLength(JSON.stringify(payload)) > maxOutboxPayloadBytes
+          )
+            throw new InterlockError(
+              "INTERLOCK_SERIALIZATION_FAILED",
+              "Outbox payload exceeds the configured limit.",
+            );
+          return Object.freeze({
+            topic: descriptor.topic,
+            ...(descriptor.key === undefined ? {} : { key: descriptor.key }),
+            payload,
+          });
+        });
         let actorIdentity;
         try {
           const projected = lifecycle.history.actor?.(command.actor);
@@ -1281,19 +1353,33 @@ export function createInterlock<
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
             "History actor projection must return an object.",
           );
+        if (
+          (actorIdentity.actorType !== undefined &&
+            typeof actorIdentity.actorType !== "string") ||
+          (actorIdentity.actorId !== undefined &&
+            typeof actorIdentity.actorId !== "string")
+        )
+          throw new InterlockError(
+            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+            "History actor projection must return string identity fields.",
+          );
+        const actorType = actorIdentity.actorType as string | undefined;
+        const actorId = actorIdentity.actorId as string | undefined;
         let metadata;
         try {
-          const projected = lifecycle.history.metadata?.({
-            request: {
-              resourceId: command.id,
-              event: command.event,
-              ...(command.metadata === undefined
-                ? {}
-                : { metadata: command.metadata }),
-            },
-            actor: command.actor,
-            resource,
-          });
+          const projected = lifecycle.history.metadata?.(
+            Object.freeze({
+              request: Object.freeze({
+                resourceId: command.id,
+                event: command.event,
+                ...(command.metadata === undefined
+                  ? {}
+                  : { metadata: command.metadata }),
+              }),
+              actor: command.actor,
+              resource,
+            }),
+          );
           metadata =
             projected === undefined
               ? undefined
@@ -1311,43 +1397,6 @@ export function createInterlock<
         assertClock();
         if (metadata !== undefined)
           metadata = snapshotJson(metadata, "History metadata");
-        if (
-          (actorIdentity.actorType !== undefined &&
-            typeof actorIdentity.actorType !== "string") ||
-          (actorIdentity.actorId !== undefined &&
-            typeof actorIdentity.actorId !== "string")
-        )
-          throw new InterlockError(
-            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-            "History actor projection must return string identity fields.",
-          );
-        const actorType = actorIdentity.actorType as string | undefined;
-        const actorId = actorIdentity.actorId as string | undefined;
-        const plannedDescriptors = descriptors.map((descriptor) => {
-          if (
-            !record(descriptor) ||
-            typeof descriptor.topic !== "string" ||
-            descriptor.topic.length === 0 ||
-            (descriptor.key !== undefined && typeof descriptor.key !== "string")
-          )
-            throw new InterlockError(
-              "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-              "Outbox descriptors require a topic and optional string key.",
-            );
-          const payload = snapshotJson(descriptor.payload, "Outbox payload");
-          if (
-            Buffer.byteLength(JSON.stringify(payload)) > maxOutboxPayloadBytes
-          )
-            throw new InterlockError(
-              "INTERLOCK_SERIALIZATION_FAILED",
-              "Outbox payload exceeds the configured limit.",
-            );
-          return {
-            topic: descriptor.topic,
-            ...(descriptor.key === undefined ? {} : { key: descriptor.key }),
-            payload,
-          };
-        });
 
         const outboxMessages: readonly OutboxInsert[] = plannedDescriptors.map(
           (descriptor) => ({
@@ -1560,9 +1609,24 @@ export function createInterlock<
   return {
     assess,
     transition,
-    consistency: (event: EventName<Schemas>) =>
-      typeof binding.consistency === "function"
-        ? binding.consistency(event)
-        : binding.consistency,
+    consistency: (event: EventName<Schemas>) => {
+      if (staticConsistency) return staticConsistency;
+      try {
+        return consistencyValue(
+          (
+            binding.consistency as (
+              event: EventName<Schemas>,
+            ) => RelatedDataConsistency
+          )(event),
+          `Event ${event}`,
+        );
+      } catch (error) {
+        throw operational(
+          "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+          `Event ${event} consistency declaration failed.`,
+          error,
+        );
+      }
+    },
   };
 }

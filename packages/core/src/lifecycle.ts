@@ -9,14 +9,15 @@ import type {
   StandardSchema,
 } from "./types.js";
 
+/** Immutable callback envelope containing application-owned transition values. */
 export interface ProjectionArgs<Resource, Actor, Context, Input> {
-  resource: Resource;
-  actor: Actor;
-  context: Context;
-  input: Input;
-  operation: InterlockOperation<Actor>;
-  transitionId: string;
-  clock: { occurredAt: Date };
+  readonly resource: Resource;
+  readonly actor: Actor;
+  readonly context: Context;
+  readonly input: Input;
+  readonly operation: InterlockOperation<Actor>;
+  readonly transitionId: string;
+  readonly clock: { readonly occurredAt: Date };
 }
 
 type ProjectionResult<Value> = Value | PromiseLike<Value>;
@@ -152,38 +153,34 @@ export interface LifecycleDefinition<
       actor: Actor,
     ) => ProjectionResult<{ actorType?: string; actorId?: string }>;
     metadata?: (args: {
-      request: {
-        resourceId: string;
-        event: string;
-        metadata?: JsonValue;
+      readonly request: {
+        readonly resourceId: string;
+        readonly event: string;
+        readonly metadata?: JsonValue;
       };
-      actor: Actor;
-      resource: Resource;
+      readonly actor: Actor;
+      readonly resource: Resource;
     }) => ProjectionResult<JsonValue>;
   };
-  idempotency?: {
-    fingerprint(args: {
-      lifecycle: string;
-      resourceId: string;
-      event: string;
-      parsedInput: ParsedInputOf<Schemas[keyof Schemas]>;
-      actor: Actor;
-      expectedVersion: string;
-    }): string;
-  };
+  idempotency?: IdempotencyConfiguration<Actor, Schemas>;
 }
 
+export type FingerprintArgs<Actor, Schemas extends EventSchemaMap> = {
+  [Event in Extract<keyof Schemas, string>]: {
+    readonly lifecycle: string;
+    readonly resourceId: string;
+    readonly event: Event;
+    readonly parsedInput: ParsedInputOf<Schemas[Event]>;
+    readonly actor: Actor;
+    readonly expectedVersion: string;
+  };
+}[Extract<keyof Schemas, string>];
+
 export type IdempotencyConfiguration<Actor, Schemas extends EventSchemaMap> = {
-  fingerprint(args: {
-    lifecycle: string;
-    resourceId: string;
-    event: string;
-    parsedInput: ParsedInputOf<Schemas[keyof Schemas]>;
-    actor: Actor;
-    expectedVersion: string;
-  }): string;
+  fingerprint(args: FingerprintArgs<Actor, Schemas>): string;
 };
 
+/** A validated lifecycle definition with input parsing and event lookup. */
 export type Lifecycle<
   Resource,
   Actor,
@@ -628,10 +625,9 @@ export function defineLifecycle<
       if (event.guards?.some((guard) => !guard || typeof guard !== "object"))
         invalid(`Event ${name} has invalid guards.`);
       const guards = event.guards?.map((guard) => guard.name) ?? [];
-      if (
-        guards.some((guard) => typeof guard !== "string" || !guard) ||
-        new Set(guards).size !== guards.length
-      )
+      if (guards.some((guard) => typeof guard !== "string" || !guard))
+        invalid(`Event ${name} has an empty or invalid guard name.`);
+      if (new Set(guards).size !== guards.length)
         invalid(`Event ${name} has duplicate guard names.`);
       if (
         (event.mutate !== undefined && typeof event.mutate !== "function") ||
@@ -690,12 +686,15 @@ export function defineLifecycle<
       ? { idempotency: Object.freeze({ ...definition.idempotency }) }
       : {}),
     getEvent: (name: string) =>
-      events[name as keyof Definition["events"]] as unknown as
-        | EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
-            keyof Schemas,
-            string
-          >]
-        | undefined,
+      Object.hasOwn(events, name)
+        ? (events[name as keyof Definition["events"]] as unknown as EventMap<
+            Resource,
+            Actor,
+            Context,
+            Schemas,
+            Mutations
+          >[Extract<keyof Schemas, string>])
+        : undefined,
     parseInput: (
       event: EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
         keyof Schemas,
