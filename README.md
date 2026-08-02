@@ -54,7 +54,8 @@ as a type and declares it as a peer dependency.
 - PostgreSQL is the reference and only first-party transaction driver; packages
   are ESM-only and require Node.js 22.14+.
 - Resource IDs are strings and versions are positive PostgreSQL `BIGINT` tokens
-  represented as strings.
+  represented as strings. Resource IDs must be globally unique within a
+  lifecycle, including across tenants.
 - Idempotent transitions require Read Committed. Interlock owns the top-level
   transaction; ambient transaction composition is not supported.
 - Application tables, SQL or ORM code, tenancy, authorization, and related-row
@@ -63,9 +64,10 @@ as a type and declares it as a peer dependency.
   current resource. Outbox delivery remains outside Interlock.
 - Related-row correctness is declared by the binding. Self-transitions are
   rejected; model them as ordinary application writes instead.
-- Prisma is proven through an executable shared-transaction spike, not a
-  published adapter. Application and Interlock writes must use one transaction
-  handle.
+- Raw `pg` integration is first-party. ORM-owned transactions are viable but
+  adapter-intensive: Prisma is proven through an executable custom-driver
+  recipe, not a published adapter. Application and Interlock writes must use one
+  transaction handle.
 
 ## Replace transaction scripts with one command
 
@@ -95,7 +97,12 @@ Interlock owns the transaction boundary; your binding still owns ordinary SQL.
 ### 1. Define a lifecycle
 
 ```ts
-import { defineEvent, defineLifecycle, deny } from "@interlock/core";
+import {
+  canonicalHash,
+  defineEvent,
+  defineLifecycle,
+  deny,
+} from "@interlock/core";
 
 interface Order {
   id: string;
@@ -105,6 +112,7 @@ interface Order {
 
 interface Actor {
   id: string;
+  tenantId: string;
   canApprove: boolean;
 }
 
@@ -115,6 +123,10 @@ const orderLifecycle = defineLifecycle<Order, Actor>()({
   history: {
     resourceType: "order",
     actor: (actor) => ({ actorType: "user", actorId: actor.id }),
+  },
+  idempotency: {
+    fingerprint: ({ resourceId, event, actor, expectedVersion }) =>
+      canonicalHash({ resourceId, event, actorId: actor.id, expectedVersion }),
   },
   events: {
     approve: event({
@@ -233,7 +245,8 @@ commands fail at compile time. Untyped callers still receive runtime
 
 Operational and integration contract failures throw stable `InterlockError`
 codes. Use `isInterlockError(error)` rather than relying on `instanceof` across
-multiple physical package copies.
+multiple physical package copies. See the [error-code reference](docs/errors.md)
+for retry and integration guidance.
 
 Handle every expected result explicitly:
 
@@ -339,9 +352,10 @@ runtime driver qualifies its own tables directly:
 const driver = new PostgresDriver(pool, { schema: "interlock" });
 ```
 
-Apply the migration with a transaction-local migration `search_path`; do not
-change a shared pool's session setting. The migration targets clean
-installations and does not upgrade older incompatible schemas.
+Apply the self-transactional migration on a dedicated connection whose
+`search_path` selects the migration schema. Do not change a shared runtime
+pool's session setting. The migration targets clean installations and does not
+upgrade older incompatible schemas.
 
 Idempotent transitions are supported at `read committed` isolation. Interlock
 rejects higher isolation levels for idempotent commands rather than advertising
@@ -361,6 +375,7 @@ an unproved concurrency algorithm.
 - [PostgreSQL integration guide](docs/guides/postgres.md)
 - [Idempotency model](docs/concepts/idempotency.md)
 - [Transaction protocol](docs/architecture/transaction-protocol.md)
+- [Error-code reference](docs/errors.md)
 - [Lifecycle builder ADR](docs/adr/0001-explicit-typed-lifecycle-builder.md)
 
 ## Scope and guarantees
@@ -371,19 +386,22 @@ APIs, or replace application-level database constraints. Outbox insertion is
 atomic; external delivery remains the application's responsibility.
 
 Applications must control direct writes to protected state and version columns.
-Bindings must also document how related facts used by guards are stabilized. The
-reference example demonstrates aggregate versioning for this purpose. For
-database-enforced append-only history, deny application roles `UPDATE` and
-`DELETE` privileges on `interlock_transition_history`.
+Interlock history and idempotency keys use `(lifecycle, resource_id)` identity,
+so tenant-local IDs must be namespaced by the application or replaced with
+globally unique IDs before they reach Interlock. Bindings must also document how
+related facts used by guards are stabilized. The reference example demonstrates
+aggregate versioning for this purpose. For database-enforced append-only
+history, deny application roles `UPDATE` and `DELETE` privileges on
+`interlock_transition_history`.
 
 A connection loss during commit reports `INTERLOCK_COMMIT_OUTCOME_UNKNOWN`.
 Reconcile through stored idempotency and history data instead of blindly
 retrying.
 
-Interlock snapshots top-level command identity and JSON protocol values before
-crossing asynchronous persistence boundaries. Actor values and parsed input are
-application-owned references; parsers and callbacks must not mutate them after
-returning.
+Interlock freezes the operation envelope and snapshots top-level command
+identity and JSON protocol values before crossing asynchronous persistence
+boundaries. Actor values and parsed input are application-owned references;
+parsers and callbacks must not mutate them after returning.
 
 Mutation, audit, outbox, history-actor, and history-metadata projections may be
 synchronous or asynchronous. They run sequentially and all settle before the
