@@ -108,8 +108,8 @@ async function verifyMemoryBinding(relatedWrites, hydrate = false) {
       : {}),
     ...(hydrate
       ? {
-          hydrateBeforeCommit: async (_transaction, resource) => ({
-            ...resource,
+          hydrateBeforeCommit: async (_transaction, args) => ({
+            ...args.resource,
           }),
         }
       : {}),
@@ -123,6 +123,7 @@ async function verifyMemoryBinding(relatedWrites, hydrate = false) {
     },
     id: "r1",
     event: "close",
+    actor: undefined,
     fromState: "open",
     toState: "closed",
     expectedVersion: "7",

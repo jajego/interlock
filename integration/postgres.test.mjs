@@ -67,15 +67,19 @@ function countingPool(pool) {
     if (normalized.startsWith("begin")) return "transaction.begin";
     if (normalized === "commit") return "transaction.commit";
     if (normalized === "rollback") return "transaction.rollback";
-    if (normalized.startsWith("insert into interlock_idempotency"))
+    if (normalized.startsWith('insert into "public"."interlock_idempotency"'))
       return "idempotency.claim";
     if (normalized.startsWith("select i.fingerprint"))
       return "idempotency.read";
-    if (normalized.startsWith("update interlock_idempotency"))
+    if (normalized.startsWith('update "public"."interlock_idempotency"'))
       return "idempotency.complete";
-    if (normalized.startsWith("insert into interlock_transition_history"))
+    if (
+      normalized.startsWith(
+        'insert into "public"."interlock_transition_history"',
+      )
+    )
       return "history.insert";
-    if (normalized.startsWith("insert into interlock_outbox"))
+    if (normalized.startsWith('insert into "public"."interlock_outbox"'))
       return "outbox.insert";
     if (normalized.startsWith("update applications")) return "primary.update";
     if (normalized.startsWith("select") && normalized.includes("applications"))
@@ -135,10 +139,10 @@ function queryCountSubject(pool, { outbox = 0, hydrate = false } = {}) {
   });
   const binding = {
     transactionOptions: () => ({ isolation: "read-committed" }),
-    loadPrimary: async (transaction, id) => {
+    loadPrimary: async (transaction, operation) => {
       const result = await transaction.query(
         "SELECT id, state, version::text version FROM applications WHERE id = $1",
-        [id],
+        [operation.id],
       );
       return result.rows[0] ?? null;
     },
@@ -164,10 +168,10 @@ function queryCountSubject(pool, { outbox = 0, hydrate = false } = {}) {
     },
     ...(hydrate
       ? {
-          hydrateBeforeCommit: async (transaction, resource) => {
+          hydrateBeforeCommit: async (transaction, args) => {
             const result = await transaction.query(
               "SELECT /* hydrate */ id, state, version::text version FROM applications WHERE id = $1",
-              [resource.id],
+              [args.resource.id],
             );
             return result.rows[0];
           },

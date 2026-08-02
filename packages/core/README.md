@@ -8,18 +8,18 @@ npm install @interlock/core@next
 ```
 
 ```ts
-import { createInterlock, defineLifecycle } from "@interlock/core";
+import { createInterlock, defineEvent, defineLifecycle } from "@interlock/core";
 
+const event = defineEvent();
 const lifecycle = defineLifecycle()({
   name: "order",
   states: ["pending", "approved"],
   history: { resourceType: "order" },
   events: {
-    approve: {
+    approve: event({
       from: ["pending"],
       to: "approved",
-      mutate: () => ({}),
-    },
+    }),
   },
 });
 

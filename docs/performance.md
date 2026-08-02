@@ -158,6 +158,20 @@ Explicitly rejected:
 - pre-serialized driver payloads, prepared statements, outbox SQL-shape caches,
   and renewed consolidated-persistence work without better end-to-end evidence.
 
-There are no public API changes and no new dependencies. Package sizes and the
-complete command matrix are reported in the release handoff rather than treated
-as performance guarantees.
+## Adaptability refactor check
+
+A final single-run check after the operation-context and projection refactor
+preserved every statement count: minimal non-idempotent 5, first idempotent 7,
+duplicate replay 4, one outbox message 6, and five outbox messages 6. Measured
+`p50 / p95` values were 25.9 / 84.2 ms, 71.6 / 163.4 ms, 2.0 / 2.4 ms, 79.8 /
+477.0 ms, and 59.0 / 108.2 ms respectively.
+
+Synchronous and asynchronous projection scenarios both used five statements.
+Their single-run `p50 / p95` values were 58.7 / 161.6 ms and 25.1 / 108.4 ms.
+The loopback variance is larger than callback overhead, so this is evidence of
+no meaningful regression, not evidence that promises improve latency. Public
+type tests compiled in 1.322 seconds on Node.js 26.5.0.
+
+The refactor adds no dependencies. Final package sizes and the complete command
+matrix are reported in the release handoff rather than treated as performance
+guarantees.

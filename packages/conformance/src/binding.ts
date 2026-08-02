@@ -1,17 +1,31 @@
 import assert from "node:assert/strict";
 import type {
   ResourceBinding,
+  InterlockOperation,
   TransactionDriver,
   TransactionOptions,
   VersionToken,
 } from "@interlock/core";
 
-export interface BindingConformance<Transaction, Resource, Mutation, Context> {
+export interface BindingConformance<
+  Transaction,
+  Resource,
+  Actor,
+  Mutation,
+  Context,
+> {
   driver: TransactionDriver<Transaction>;
-  binding: ResourceBinding<Transaction, Resource, Mutation, Context>;
+  binding: ResourceBinding<
+    Transaction,
+    Resource,
+    Actor,
+    Context,
+    Record<string, Mutation>
+  >;
   reset(): Promise<void>;
   id: string;
   event: string;
+  actor: Actor;
   fromState: string;
   toState: string;
   expectedVersion: VersionToken;
@@ -33,49 +47,59 @@ export interface BindingConformance<Transaction, Resource, Mutation, Context> {
 export async function verifyResourceBinding<
   Transaction,
   Resource,
+  Actor,
   Mutation,
   Context,
 >(
-  fixture: BindingConformance<Transaction, Resource, Mutation, Context>,
+  fixture: BindingConformance<Transaction, Resource, Actor, Mutation, Context>,
 ): Promise<void> {
   const { binding, driver } = fixture;
+  const operation = (mode: "advisory" | "authoritative") =>
+    Object.freeze({
+      mode,
+      id: fixture.id,
+      event: fixture.event,
+      actor: fixture.actor,
+    }) satisfies InterlockOperation<Actor>;
   assert.deepEqual(
-    binding.transactionOptions({ mode: "advisory", event: fixture.event }),
+    binding.transactionOptions?.(operation("advisory")) ?? {},
     fixture.advisoryOptions,
   );
   assert.deepEqual(
-    binding.transactionOptions({ mode: "authoritative", event: fixture.event }),
+    binding.transactionOptions?.(operation("authoritative")) ?? {},
     fixture.authoritativeOptions,
   );
 
   await fixture.reset();
   await driver.transaction(async (transaction) => {
-    const resource = await binding.loadPrimary(transaction, fixture.id);
+    const resource = await binding.loadPrimary(
+      transaction,
+      operation("authoritative"),
+    );
     assert.ok(resource);
     assert.equal(binding.getId(resource), fixture.id);
     assert.equal(binding.getState(resource), fixture.fromState);
     assert.equal(binding.getVersion(resource), fixture.expectedVersion);
-    await fixture.assertContext(
-      binding.contextFactory.create(transaction, {
-        mode: "advisory",
-        event: fixture.event,
-      }),
-      "advisory",
-    );
-    await fixture.assertContext(
-      binding.contextFactory.create(transaction, {
-        mode: "authoritative",
-        event: fixture.event,
-      }),
-      "authoritative",
-    );
+    if (binding.contextFactory) {
+      await fixture.assertContext(
+        await binding.contextFactory.create(transaction, operation("advisory")),
+        "advisory",
+      );
+      await fixture.assertContext(
+        await binding.contextFactory.create(
+          transaction,
+          operation("authoritative"),
+        ),
+        "authoritative",
+      );
+    }
     const applied = await binding.applyPrimary(transaction, {
       resource,
       fromState: fixture.fromState,
       toState: fixture.toState,
       expectedVersion: fixture.expectedVersion,
       nextVersion: fixture.nextVersion,
-      mutation: fixture.mutation,
+      operation: { ...operation("authoritative"), mutation: fixture.mutation },
     });
     assert.equal(applied.status, "applied");
     if (applied.status !== "applied") return;
@@ -85,15 +109,18 @@ export async function verifyResourceBinding<
     await binding.applyRelated?.(transaction, {
       previousResource: resource,
       updatedResource: applied.resource,
-      mutation: fixture.mutation,
+      operation: { ...operation("authoritative"), mutation: fixture.mutation },
       transitionId: "binding-conformance",
       occurredAt: new Date("2026-01-01T00:00:00.000Z"),
     });
     if (binding.hydrateBeforeCommit) {
-      const hydrated = await binding.hydrateBeforeCommit(
-        transaction,
-        applied.resource,
-      );
+      const hydrated = await binding.hydrateBeforeCommit(transaction, {
+        resource: applied.resource,
+        operation: {
+          ...operation("authoritative"),
+          mutation: fixture.mutation,
+        },
+      });
       assert.equal(binding.getId(hydrated), fixture.id);
       assert.equal(binding.getState(hydrated), fixture.toState);
       assert.equal(binding.getVersion(hydrated), fixture.nextVersion);
@@ -108,7 +135,10 @@ export async function verifyResourceBinding<
 
   await fixture.reset();
   await driver.transaction(async (transaction) => {
-    const resource = await binding.loadPrimary(transaction, fixture.id);
+    const resource = await binding.loadPrimary(
+      transaction,
+      operation("authoritative"),
+    );
     assert.ok(resource);
     const stale = await binding.applyPrimary(transaction, {
       resource,
@@ -116,14 +146,17 @@ export async function verifyResourceBinding<
       toState: fixture.toState,
       expectedVersion: fixture.staleVersion,
       nextVersion: fixture.nextVersion,
-      mutation: fixture.mutation,
+      operation: { ...operation("authoritative"), mutation: fixture.mutation },
     });
     assert.equal(stale.status, "conflict");
   });
 
   await fixture.reset();
   await driver.transaction(async (transaction) => {
-    const resource = await binding.loadPrimary(transaction, fixture.id);
+    const resource = await binding.loadPrimary(
+      transaction,
+      operation("authoritative"),
+    );
     assert.ok(resource);
     const invalidState = await binding.applyPrimary(transaction, {
       resource,
@@ -131,7 +164,7 @@ export async function verifyResourceBinding<
       toState: fixture.toState,
       expectedVersion: fixture.expectedVersion,
       nextVersion: fixture.nextVersion,
-      mutation: fixture.mutation,
+      operation: { ...operation("authoritative"), mutation: fixture.mutation },
     });
     assert.equal(invalidState.status, "conflict");
   });

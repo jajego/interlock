@@ -4,6 +4,7 @@ import { assertJsonValue, snapshotJsonValue } from "./json.js";
 import type {
   EventMap,
   EventSchemaMap,
+  MutationMap,
   Lifecycle,
   ParsedInputOf,
   SubmittedInputOf,
@@ -11,6 +12,7 @@ import type {
 import type {
   AssessmentResult,
   JsonValue,
+  InterlockOperation,
   OutboxInsert,
   PublicDenial,
   ResourceBinding,
@@ -20,10 +22,11 @@ import type {
   VersionExpectation,
   VersionToken,
   TransactionOptions,
+  WriteOperation,
 } from "./types.js";
 import { incrementVersion, parseVersionToken } from "./version.js";
 
-type EventName<Schemas extends EventSchemaMap> = Extract<keyof Schemas, string>;
+type EventName<Events> = Extract<keyof Events, string>;
 type InputField<SchemaType> = [SubmittedInputOf<SchemaType>] extends [undefined]
   ? { input?: undefined }
   : { input: SubmittedInputOf<SchemaType> };
@@ -36,19 +39,35 @@ interface CommonRequest<Actor> {
   causationId?: string;
 }
 
-export type TransitionRequestFor<Schemas extends EventSchemaMap, Actor> = {
-  [Event in EventName<Schemas>]: CommonRequest<Actor> &
-    InputField<Schemas[Event]> & {
+type EventSchema<Event> = Event extends { input: infer SchemaType }
+  ? SchemaType
+  : undefined;
+
+export type TransitionRequestFor<Events, Actor> = {
+  [Event in EventName<Events>]: CommonRequest<Actor> &
+    InputField<EventSchema<Events[Event]>> & {
       event: Event;
       expectedVersion: string | "use-loaded-version";
       idempotency?: { key: string };
     };
-}[EventName<Schemas>];
+}[EventName<Events>];
 
-export type AssessmentRequestFor<Schemas extends EventSchemaMap, Actor> = {
-  [Event in EventName<Schemas>]: CommonRequest<Actor> &
-    InputField<Schemas[Event]> & { event: Event };
-}[EventName<Schemas>];
+export type AssessmentRequestFor<Events, Actor> = {
+  [Event in EventName<Events>]: CommonRequest<Actor> &
+    InputField<EventSchema<Events[Event]>> & { event: Event };
+}[EventName<Events>];
+
+export interface InterlockClient<Resource, Actor, Events> {
+  assess(
+    request: AssessmentRequestFor<Events, Actor>,
+  ): Promise<AssessmentResult>;
+  transition(
+    request: TransitionRequestFor<Events, Actor>,
+  ): Promise<TransitionResult<Resource>>;
+  consistency(
+    event: EventName<Events>,
+  ): import("./types.js").RelatedDataConsistency;
+}
 
 interface BoundaryRequest<Actor> extends CommonRequest<Actor> {
   event: string;
@@ -88,6 +107,12 @@ function nonempty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function thenable<Value>(
+  value: Value | PromiseLike<Value>,
+): value is PromiseLike<Value> {
+  return record(value) && typeof value.then === "function";
+}
+
 function snapshotJson(value: unknown, label: string): JsonValue {
   try {
     return snapshotJsonValue(value);
@@ -98,6 +123,13 @@ function snapshotJson(value: unknown, label: string): JsonValue {
       error,
     );
   }
+}
+
+function freezeJson(value: JsonValue): JsonValue {
+  if (value === null || typeof value !== "object") return value;
+  for (const item of Array.isArray(value) ? value : Object.values(value))
+    freezeJson(item);
+  return Object.freeze(value);
 }
 
 function unexpected(error: unknown): InterlockError {
@@ -115,16 +147,36 @@ export function createInterlock<
   Resource,
   Actor,
   Context,
-  Mutation,
   Schemas extends EventSchemaMap,
+  DefinitionMutations extends { [Event in keyof Schemas]: unknown },
+  Events extends EventMap<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    DefinitionMutations
+  >,
 >(options: {
-  lifecycle: Lifecycle<Resource, Actor, Context, Mutation, Schemas>;
+  lifecycle: Lifecycle<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    DefinitionMutations,
+    Events
+  >;
   driver: TransactionDriver<Transaction>;
-  binding: ResourceBinding<Transaction, Resource, Mutation, Context>;
+  binding: ResourceBinding<
+    Transaction,
+    Resource,
+    Actor,
+    Context,
+    MutationMap<Events>
+  >;
   ids?: () => string;
   now?: () => Date;
   maxOutboxPayloadBytes?: number;
-}) {
+}): InterlockClient<Resource, Actor, Events> {
   if (!options || typeof options !== "object")
     throw new InterlockError(
       "INTERLOCK_DEFINITION_INVALID",
@@ -160,16 +212,19 @@ export function createInterlock<
   if (
     !record(binding) ||
     [
-      binding.transactionOptions,
       binding.loadPrimary,
       binding.getId,
       binding.getState,
       binding.getVersion,
       binding.applyPrimary,
-      binding.consistency,
     ].some((method) => typeof method !== "function") ||
-    !record(binding.contextFactory) ||
-    typeof binding.contextFactory.create !== "function" ||
+    (binding.transactionOptions !== undefined &&
+      typeof binding.transactionOptions !== "function") ||
+    (binding.contextFactory !== undefined &&
+      (!record(binding.contextFactory) ||
+        typeof binding.contextFactory.create !== "function")) ||
+    (typeof binding.consistency !== "function" &&
+      !record(binding.consistency)) ||
     (binding.applyRelated !== undefined &&
       typeof binding.applyRelated !== "function") ||
     (binding.hydrateBeforeCommit !== undefined &&
@@ -268,18 +323,17 @@ export function createInterlock<
     };
   };
   const resolveTransactionOptions = (
-    mode: "advisory" | "authoritative",
-    event: string,
+    operation: InterlockOperation<Actor, EventName<Schemas>>,
   ): TransactionOptions => {
     try {
       return transactionOptions(
-        binding.transactionOptions({ mode, event }),
-        mode,
+        binding.transactionOptions?.(operation) ?? {},
+        operation.mode,
       );
     } catch (error) {
       throw operational(
         "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
-        `${mode} transaction options failed.`,
+        `${operation.mode} transaction options failed.`,
         error,
       );
     }
@@ -288,9 +342,9 @@ export function createInterlock<
     Resource,
     Actor,
     Context,
-    Mutation,
-    Schemas
-  >[keyof Schemas];
+    Schemas,
+    DefinitionMutations
+  >[EventName<Schemas>];
   type NormalizationFailure = {
     ok: false;
     result:
@@ -355,7 +409,7 @@ export function createInterlock<
     const metadata =
       request.metadata === undefined
         ? undefined
-        : snapshotJson(request.metadata, "Request metadata");
+        : freezeJson(snapshotJson(request.metadata, "Request metadata"));
     return Object.freeze({
       id: request.id,
       event: request.event,
@@ -394,6 +448,25 @@ export function createInterlock<
     });
   }
 
+  function operation(
+    request: SnapshotRequest,
+    mode: "advisory" | "authoritative",
+  ): InterlockOperation<Actor, EventName<Schemas>> {
+    return Object.freeze({
+      mode,
+      id: request.id,
+      event: request.event as EventName<Schemas>,
+      actor: request.actor,
+      ...(request.metadata === undefined ? {} : { metadata: request.metadata }),
+      ...(request.correlationId === undefined
+        ? {}
+        : { correlationId: request.correlationId }),
+      ...(request.causationId === undefined
+        ? {}
+        : { causationId: request.causationId }),
+    });
+  }
+
   function decision(value: unknown, label: string) {
     if (value === true || (record(value) && value.allowed === true))
       return { allowed: true } as const;
@@ -407,8 +480,7 @@ export function createInterlock<
     const denial = value.denial;
     if (
       !nonempty(denial.code) ||
-      (denial.publicMessage !== undefined &&
-        typeof denial.publicMessage !== "string") ||
+      (denial.message !== undefined && typeof denial.message !== "string") ||
       (denial.privateMessage !== undefined &&
         typeof denial.privateMessage !== "string")
     )
@@ -416,24 +488,25 @@ export function createInterlock<
         "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
         `${label} returned an invalid denial.`,
       );
-    if (denial.details !== undefined) {
-      try {
-        assertJsonValue(denial.details);
-      } catch (error) {
-        throw operational(
-          "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-          `${label} returned invalid denial details.`,
-          error,
-        );
-      }
+    let publicDetails: JsonValue | undefined;
+    try {
+      if (denial.publicDetails !== undefined)
+        publicDetails = snapshotJsonValue(denial.publicDetails);
+      if (denial.privateDetails !== undefined)
+        assertJsonValue(denial.privateDetails);
+    } catch (error) {
+      throw operational(
+        "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+        `${label} returned invalid denial details.`,
+        error,
+      );
     }
     return {
       allowed: false,
       denial: {
         code: denial.code,
-        ...(denial.publicMessage === undefined
-          ? {}
-          : { publicMessage: denial.publicMessage }),
+        ...(denial.message === undefined ? {} : { message: denial.message }),
+        ...(publicDetails === undefined ? {} : { publicDetails }),
       },
     } as const;
   }
@@ -585,7 +658,8 @@ export function createInterlock<
         ok: false,
         result: { status: "unknown-event", event: String(request.event) },
       };
-    const event = lifecycle.getEvent(request.event);
+    const event = lifecycle.getEvent(request.event) as
+      LifecycleEvent | undefined;
     if (!event)
       return {
         ok: false,
@@ -704,9 +778,14 @@ export function createInterlock<
     };
     let authorization;
     try {
-      authorization = event.authorize
-        ? decision(await event.authorize(args), "Authorization callback")
-        : undefined;
+      if (!event.authorize) authorization = undefined;
+      else {
+        const evaluated = event.authorize(args);
+        authorization = decision(
+          thenable(evaluated) ? await evaluated : evaluated,
+          "Authorization callback",
+        );
+      }
     } catch (error) {
       throw operational(
         "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -719,14 +798,21 @@ export function createInterlock<
       return {
         source: "authorization",
         code: authorization.denial.code,
-        ...(authorization.denial.publicMessage === undefined
+        ...(authorization.denial.message === undefined
           ? {}
-          : { publicMessage: authorization.denial.publicMessage }),
+          : { message: authorization.denial.message }),
+        ...(authorization.denial.publicDetails === undefined
+          ? {}
+          : { publicDetails: authorization.denial.publicDetails }),
       };
     for (const guard of event.guards ?? []) {
       let result;
       try {
-        result = decision(await guard.evaluate(args), `Guard ${guard.name}`);
+        const evaluated = guard.evaluate(args);
+        result = decision(
+          thenable(evaluated) ? await evaluated : evaluated,
+          `Guard ${guard.name}`,
+        );
       } catch (error) {
         throw operational(
           "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -740,31 +826,35 @@ export function createInterlock<
           source: "guard",
           rule: guard.name,
           code: result.denial.code,
-          ...(result.denial.publicMessage === undefined
+          ...(result.denial.message === undefined
             ? {}
-            : { publicMessage: result.denial.publicMessage }),
+            : { message: result.denial.message }),
+          ...(result.denial.publicDetails === undefined
+            ? {}
+            : { publicDetails: result.denial.publicDetails }),
         };
     }
     return undefined;
   }
 
   async function assess(
-    request: AssessmentRequestFor<Schemas, Actor>,
+    request: AssessmentRequestFor<Events, Actor>,
   ): Promise<AssessmentResult> {
     const invalidEnvelope = invalidRequestEnvelope(request);
     if (invalidEnvelope) return invalidEnvelope.result;
     const command = snapshotRequest(request as BoundaryRequest<Actor>);
     const normalized = await normalizeEvent(command);
     if (!normalized.ok) return normalized.result;
+    const advisoryOperation = operation(command, "advisory");
     const advisoryOptions = {
-      ...resolveTransactionOptions("advisory", command.event),
+      ...resolveTransactionOptions(advisoryOperation),
       readOnly: true,
     };
     try {
       return await driver.transaction(async (transaction) => {
         let resource;
         try {
-          resource = await binding.loadPrimary(transaction, command.id);
+          resource = await binding.loadPrimary(transaction, advisoryOperation);
         } catch (error) {
           throw operational(
             "INTERLOCK_PERSISTENCE_FAILED",
@@ -793,12 +883,16 @@ export function createInterlock<
               "Lifecycle callbacks mutated the loaded resource identity, state, or version.",
             );
         };
-        let context;
+        let context: Context;
         try {
-          context = binding.contextFactory.create(transaction, {
-            mode: "advisory",
-            event: command.event,
-          });
+          if (!binding.contextFactory) context = undefined as Context;
+          else {
+            const created = binding.contextFactory.create(
+              transaction,
+              advisoryOperation,
+            );
+            context = thenable(created) ? await created : created;
+          }
         } catch (error) {
           throw operational(
             "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
@@ -821,7 +915,7 @@ export function createInterlock<
               event: command.event,
               currentState,
               targetState: normalized.event.to,
-              reasons: [reason],
+              reason,
             }
           : {
               status: "allowed",
@@ -835,7 +929,7 @@ export function createInterlock<
   }
 
   async function transition(
-    request: TransitionRequestFor<Schemas, Actor>,
+    request: TransitionRequestFor<Events, Actor>,
   ): Promise<TransitionResult<Resource>> {
     const invalidEnvelope = invalidRequestEnvelope(request);
     if (invalidEnvelope) return invalidEnvelope.result;
@@ -847,9 +941,9 @@ export function createInterlock<
     );
     const normalized = await normalizeTransition(command);
     if (!normalized.ok) return normalized.result;
+    const authoritativeOperation = operation(command, "authoritative");
     const authoritativeOptions = resolveTransactionOptions(
-      "authoritative",
-      command.event,
+      authoritativeOperation,
     );
     if (authoritativeOptions.readOnly === true)
       throw new InterlockError(
@@ -915,7 +1009,10 @@ export function createInterlock<
 
         let resource;
         try {
-          resource = await binding.loadPrimary(transaction, command.id);
+          resource = await binding.loadPrimary(
+            transaction,
+            authoritativeOperation,
+          );
         } catch (error) {
           throw operational(
             "INTERLOCK_PERSISTENCE_FAILED",
@@ -961,12 +1058,16 @@ export function createInterlock<
           normalized.expectedVersion === "use-loaded-version"
             ? loadedVersion
             : normalized.expectedVersion;
-        let context;
+        let context: Context;
         try {
-          context = binding.contextFactory.create(transaction, {
-            mode: "authoritative",
-            event: command.event,
-          });
+          if (!binding.contextFactory) context = undefined as Context;
+          else {
+            const created = binding.contextFactory.create(
+              transaction,
+              authoritativeOperation,
+            );
+            context = thenable(created) ? await created : created;
+          }
         } catch (error) {
           throw operational(
             "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
@@ -989,7 +1090,7 @@ export function createInterlock<
             event: command.event,
             currentState: fromState,
             targetState: normalized.event.to,
-            reasons: [reason],
+            reason,
           });
 
         const occurredAt = timestamp("Transition");
@@ -1012,7 +1113,13 @@ export function createInterlock<
         };
         let mutation;
         try {
-          mutation = normalized.event.mutate(projection);
+          const projected = normalized.event.mutate?.(projection);
+          mutation =
+            projected === undefined
+              ? undefined
+              : thenable(projected)
+                ? await projected
+                : projected;
         } catch (error) {
           throw operational(
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -1024,7 +1131,13 @@ export function createInterlock<
         assertClock();
         let auditData;
         try {
-          auditData = normalized.event.audit?.(projection);
+          const projected = normalized.event.audit?.(projection);
+          auditData =
+            projected === undefined
+              ? undefined
+              : thenable(projected)
+                ? await projected
+                : projected;
         } catch (error) {
           throw operational(
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -1038,7 +1151,13 @@ export function createInterlock<
           auditData = snapshotJson(auditData, "Audit data");
         let descriptors;
         try {
-          descriptors = normalized.event.outbox?.(projection) ?? [];
+          const projected = normalized.event.outbox?.(projection);
+          descriptors =
+            projected === undefined
+              ? []
+              : thenable(projected)
+                ? await projected
+                : projected;
         } catch (error) {
           throw operational(
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -1055,7 +1174,13 @@ export function createInterlock<
         assertClock();
         let actorIdentity;
         try {
-          actorIdentity = lifecycle.history.actor?.(command.actor) ?? {};
+          const projected = lifecycle.history.actor?.(command.actor);
+          actorIdentity =
+            projected === undefined
+              ? {}
+              : thenable(projected)
+                ? await projected
+                : projected;
         } catch (error) {
           throw operational(
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -1071,7 +1196,7 @@ export function createInterlock<
           );
         let metadata;
         try {
-          metadata = lifecycle.history.metadata?.({
+          const projected = lifecycle.history.metadata?.({
             request: {
               resourceId: command.id,
               event: command.event,
@@ -1082,6 +1207,12 @@ export function createInterlock<
             actor: command.actor,
             resource,
           });
+          metadata =
+            projected === undefined
+              ? undefined
+              : thenable(projected)
+                ? await projected
+                : projected;
         } catch (error) {
           throw operational(
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -1179,6 +1310,10 @@ export function createInterlock<
             ? {}
             : { definitionVersion: lifecycle.definitionVersion }),
         };
+        const writeOperation = Object.freeze({
+          ...authoritativeOperation,
+          mutation,
+        }) as WriteOperation<Actor, MutationMap<Events>>;
         let applied: Awaited<ReturnType<typeof binding.applyPrimary>>;
         try {
           applied = await binding.applyPrimary(transaction, {
@@ -1187,7 +1322,7 @@ export function createInterlock<
             toState: normalized.event.to,
             expectedVersion,
             nextVersion,
-            mutation,
+            operation: writeOperation,
           });
         } catch (error) {
           throw operational(
@@ -1244,7 +1379,7 @@ export function createInterlock<
           await binding.applyRelated?.(transaction, {
             previousResource: resource,
             updatedResource: applied.resource,
-            mutation,
+            operation: writeOperation,
             transitionId,
             occurredAt: new Date(occurredTime),
           });
@@ -1297,10 +1432,10 @@ export function createInterlock<
         let hydrated = applied.resource;
         if (binding.hydrateBeforeCommit) {
           try {
-            hydrated = await binding.hydrateBeforeCommit(
-              transaction,
-              applied.resource,
-            );
+            hydrated = await binding.hydrateBeforeCommit(transaction, {
+              resource: applied.resource,
+              operation: writeOperation,
+            });
           } catch (error) {
             throw operational(
               "INTERLOCK_PERSISTENCE_FAILED",
@@ -1338,6 +1473,9 @@ export function createInterlock<
   return {
     assess,
     transition,
-    consistency: (event: EventName<Schemas>) => binding.consistency(event),
+    consistency: (event: EventName<Schemas>) =>
+      typeof binding.consistency === "function"
+        ? binding.consistency(event)
+        : binding.consistency,
   };
 }

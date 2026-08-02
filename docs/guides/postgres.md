@@ -33,6 +33,8 @@ HTTP concurrency. Bindings should batch related writes where ordinary SQL can do
 so, and outbox messages should normally reference large blobs rather than
 embedding them.
 
-The migration creates objects in the active schema and wraps a clean install in
-one transaction. Use a dedicated schema or migration role with a deliberate
-`search_path`. Existing incompatible tables are not upgraded in place.
+The migration creates objects in the active migration schema. Configure runtime
+qualification once with `new PostgresDriver(pool, { schema: "interlock" })` and
+apply the migration with `SET LOCAL search_path` inside the migration
+transaction. Never alter a shared pool's session `search_path`. Existing
+incompatible tables are not upgraded in place.

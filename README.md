@@ -49,6 +49,24 @@ npm install @interlock/core@next @interlock/postgres@next pg
 Your application owns the `pg` `Pool`. The PostgreSQL package imports `pg` only
 as a type and declares it as a peer dependency.
 
+## Integration requirements
+
+- PostgreSQL is the reference and only first-party transaction driver; packages
+  are ESM-only and require Node.js 22.14+.
+- Resource IDs are strings and versions are positive PostgreSQL `BIGINT` tokens
+  represented as strings.
+- Idempotent transitions require Read Committed. Interlock owns the top-level
+  transaction; ambient transaction composition is not supported.
+- Application tables, SQL or ORM code, tenancy, authorization, and related-row
+  consistency remain application-owned. Direct writes can bypass Interlock.
+- Duplicate replay returns stored transition history, not necessarily the
+  current resource. Outbox delivery remains outside Interlock.
+- Related-row correctness is declared by the binding. Self-transitions are
+  rejected; model them as ordinary application writes instead.
+- Prisma is proven through an executable shared-transaction spike, not a
+  published adapter. Application and Interlock writes must use one transaction
+  handle.
+
 ## Replace transaction scripts with one command
 
 Without Interlock, each command handler must remember the same protocol:
@@ -77,7 +95,7 @@ Interlock owns the transaction boundary; your binding still owns ordinary SQL.
 ### 1. Define a lifecycle
 
 ```ts
-import { defineLifecycle, deny } from "@interlock/core";
+import { defineEvent, defineLifecycle, deny } from "@interlock/core";
 
 interface Order {
   id: string;
@@ -90,12 +108,8 @@ interface Actor {
   canApprove: boolean;
 }
 
-const orderLifecycle = defineLifecycle<
-  Order,
-  Actor,
-  Record<string, never>,
-  { approvedBy: string }
->()({
+const event = defineEvent<Order, Actor>();
+const orderLifecycle = defineLifecycle<Order, Actor>()({
   name: "order",
   states: ["pending", "approved"],
   history: {
@@ -103,7 +117,7 @@ const orderLifecycle = defineLifecycle<
     actor: (actor) => ({ actorType: "user", actorId: actor.id }),
   },
   events: {
-    approve: {
+    approve: event({
       from: ["pending"],
       to: "approved",
       authorize: ({ actor }) =>
@@ -116,7 +130,7 @@ const orderLifecycle = defineLifecycle<
           payload: { orderId: resource.id, transitionId },
         },
       ],
-    },
+    }),
   },
 });
 ```
@@ -124,7 +138,20 @@ const orderLifecycle = defineLifecycle<
 ### 2. Connect your table
 
 A resource binding maps Interlock's transaction protocol to your existing
-tables. Its primary update uses normal conditional SQL:
+tables. `loadPrimary()` receives the immutable operation before policy runs, so
+it can apply tenant-local transaction context without closure state:
+
+```ts
+loadPrimary: async (transaction, operation) => {
+  await transaction.query("select set_config('app.tenant_id', $1, true)", [
+    operation.actor.tenantId,
+  ]);
+  return loadOrder(transaction, operation.id);
+};
+```
+
+`applyPrimary()` receives the selected event and its correlated mutation on
+`args.operation`; the compare-and-swap remains ordinary SQL:
 
 ```sql
 UPDATE orders
@@ -305,9 +332,16 @@ const migration = await readFile(
 );
 ```
 
-The migration runs as one transaction and targets clean installations; it does
-not upgrade older incompatible Interlock schemas. Use a deliberate PostgreSQL
-schema and `search_path`.
+The migration runs as one transaction in the active migration schema. The
+runtime driver qualifies its own tables directly:
+
+```ts
+const driver = new PostgresDriver(pool, { schema: "interlock" });
+```
+
+Apply the migration with a transaction-local migration `search_path`; do not
+change a shared pool's session setting. The migration targets clean
+installations and does not upgrade older incompatible schemas.
 
 Idempotent transitions are supported at `read committed` isolation. Interlock
 rejects higher isolation levels for idempotent commands rather than advertising
@@ -350,6 +384,11 @@ Interlock snapshots top-level command identity and JSON protocol values before
 crossing asynchronous persistence boundaries. Actor values and parsed input are
 application-owned references; parsers and callbacks must not mutate them after
 returning.
+
+Mutation, audit, outbox, history-actor, and history-metadata projections may be
+synchronous or asynchronous. They run sequentially and all settle before the
+primary write. Transactional reads are allowed; writes and external side effects
+are not. Caller-initiated retries may evaluate them again.
 
 ## Compatibility
 

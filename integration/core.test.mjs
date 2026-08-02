@@ -288,7 +288,6 @@ test("lifecycle definitions reject malformed public fields", () => {
       ...valid(),
       events: { move: { ...valid().events.move, guards: [null] } },
     },
-    { ...valid(), events: { move: { from: ["a"], to: "b" } } },
     {
       ...valid(),
       events: { move: { ...valid().events.move, authorize: true } },
@@ -379,20 +378,28 @@ function executorFixture(options = {}) {
           return options.authorize?.(args) ?? { allowed: true };
         },
         guards: options.guards,
-        mutate: (args) => {
-          order.push("mutate");
-          return options.mutate?.(args) ?? {};
-        },
+        ...(options.noMutation
+          ? {}
+          : {
+              mutate: (args) => {
+                order.push("mutate");
+                return options.mutate?.(args) ?? {};
+              },
+            }),
         audit: options.audit,
         outbox: options.outbox,
       },
     },
   };
   const binding = {
-    transactionOptions: (args) =>
-      options.transactionOptionsCallback?.(args) ??
-      options.transactionOptions ??
-      {},
+    ...(options.omitTransactionOptions
+      ? {}
+      : {
+          transactionOptions: (args) =>
+            options.transactionOptionsCallback?.(args) ??
+            options.transactionOptions ??
+            {},
+        }),
     loadPrimary: async (...args) =>
       typeof options.loadPrimary === "function"
         ? options.loadPrimary(...args)
@@ -421,10 +428,14 @@ function executorFixture(options = {}) {
     },
     applyRelated: options.applyRelated,
     hydrateBeforeCommit: options.hydrate,
-    contextFactory: {
-      create: (...args) => options.context?.(...args) ?? {},
-    },
-    consistency: () => ({ strategy: "none", notes: "fixture" }),
+    ...(options.omitContext
+      ? {}
+      : {
+          contextFactory: {
+            create: (...args) => options.context?.(...args) ?? {},
+          },
+        }),
+    consistency: { strategy: "none", notes: "fixture" },
   };
   const clocks = [
     new Date("2026-01-01T00:00:00.000Z"),
@@ -459,6 +470,113 @@ const transitionRequest = {
   expectedVersion: "1",
   idempotency: { key: "key" },
 };
+
+test("operation context reaches loading, context, and writes immutably", async () => {
+  const seen = [];
+  const actor = { id: "user-1", tenantId: "tenant-1" };
+  const fixture = executorFixture({
+    loadPrimary: async (_transaction, operation) => {
+      seen.push(["load", operation]);
+      assert.equal(operation.actor.tenantId, "tenant-1");
+      assert.equal(operation.metadata.source, "api");
+      assert.equal(Object.isFrozen(operation), true);
+      assert.equal(Object.isFrozen(operation.metadata), true);
+      return { id: operation.id, state: "a", version: "1" };
+    },
+    context: (_transaction, operation) => {
+      seen.push(["context", operation]);
+      return { tenantId: operation.actor.tenantId };
+    },
+    observeApply: (args) => {
+      seen.push(["primary", args.operation]);
+      assert.equal(args.operation.event, "move");
+      assert.equal(Object.isFrozen(args.operation), true);
+    },
+    applyRelated: async (_transaction, args) => {
+      seen.push(["related", args.operation]);
+      assert.equal(args.operation.event, "move");
+    },
+  });
+  const result = await fixture.subject.transition({
+    ...transitionRequest,
+    actor,
+    metadata: { source: "api" },
+    correlationId: "correlation-1",
+  });
+  assert.equal(result.status, "committed");
+  assert.deepEqual(
+    seen.map(([boundary]) => boundary),
+    ["load", "context", "primary", "related"],
+  );
+  assert.equal(seen[0][1], seen[1][1]);
+  assert.equal(seen[2][1], seen[3][1]);
+});
+
+test("ordinary transitions default options, context, and mutation", async () => {
+  let options;
+  const fixture = executorFixture({
+    noMutation: true,
+    omitContext: true,
+    omitTransactionOptions: true,
+    observeTransactionOptions: (value) => {
+      options = value;
+    },
+    observeApply: (args) => assert.equal(args.operation.mutation, undefined),
+  });
+  const result = await fixture.subject.transition(transitionRequest);
+  assert.equal(result.status, "committed");
+  assert.deepEqual(options, {});
+});
+
+test("async projections settle in order before the first write", async () => {
+  const order = [];
+  const fixture = executorFixture({
+    mutate: async () => {
+      order.push("mutate");
+      return { value: 1 };
+    },
+    audit: async () => {
+      order.push("audit");
+      return { value: 2 };
+    },
+    outbox: async () => {
+      order.push("outbox");
+      return [{ topic: "planned", payload: { value: 3 } }];
+    },
+    actorCallback: async () => {
+      order.push("actor");
+      return { actorId: "user-1" };
+    },
+    metadataCallback: async () => {
+      order.push("metadata");
+      return { value: 4 };
+    },
+    observeApply: () => order.push("apply"),
+  });
+  await fixture.subject.transition(transitionRequest);
+  assert.deepEqual(order, [
+    "mutate",
+    "audit",
+    "outbox",
+    "actor",
+    "metadata",
+    "apply",
+  ]);
+});
+
+test("async projection rejection prevents every write", async () => {
+  const cause = new Error("projection failed");
+  const fixture = executorFixture({ audit: async () => Promise.reject(cause) });
+  await assert.rejects(
+    fixture.subject.transition(transitionRequest),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION" &&
+      error.cause === cause,
+  );
+  assert.equal(fixture.order.includes("apply"), false);
+  assert.equal(fixture.order.includes("history"), false);
+});
 
 test("transition clock is allocated after authoritative assessment", async () => {
   const fixture = executorFixture();
@@ -941,6 +1059,7 @@ test("empty idempotency keys are rejected before a transaction", async () => {
 
 test("assess forces read-only transactions and strips private denial data", async () => {
   let transactionOptions;
+  const publicDetails = { retryable: false };
   const fixture = executorFixture({
     transactionOptions: { isolation: "serializable", readOnly: false },
     observeTransactionOptions: (value) => {
@@ -949,15 +1068,21 @@ test("assess forces read-only transactions and strips private denial data", asyn
     guards: [
       {
         name: "private",
-        evaluate: () => ({
-          allowed: false,
-          denial: {
-            code: "NO",
-            publicMessage: "Not allowed",
-            privateMessage: "secret",
-            details: { secret: true },
-          },
-        }),
+        evaluate: () => {
+          globalThis.queueMicrotask(() => {
+            publicDetails.retryable = true;
+          });
+          return {
+            allowed: false,
+            denial: {
+              code: "NO",
+              message: "Not allowed",
+              publicDetails,
+              privateMessage: "secret",
+              privateDetails: { secret: true },
+            },
+          };
+        },
       },
     ],
   });
@@ -970,14 +1095,13 @@ test("assess forces read-only transactions and strips private denial data", asyn
     isolation: "serializable",
     readOnly: true,
   });
-  assert.deepEqual(result.reasons, [
-    {
-      source: "guard",
-      rule: "private",
-      code: "NO",
-      publicMessage: "Not allowed",
-    },
-  ]);
+  assert.deepEqual(result.reason, {
+    source: "guard",
+    rule: "private",
+    code: "NO",
+    message: "Not allowed",
+    publicDetails: { retryable: false },
+  });
 });
 
 test("authorization denials are public and roll back authoritative work", async () => {
@@ -986,7 +1110,7 @@ test("authorization denials are public and roll back authoritative work", async 
       allowed: false,
       denial: {
         code: "FORBIDDEN",
-        publicMessage: "Not allowed",
+        message: "Not allowed",
         privateMessage: "secret",
       },
     }),
@@ -996,13 +1120,11 @@ test("authorization denials are public and roll back authoritative work", async 
     event: "move",
     currentState: "a",
     targetState: "b",
-    reasons: [
-      {
-        source: "authorization",
-        code: "FORBIDDEN",
-        publicMessage: "Not allowed",
-      },
-    ],
+    reason: {
+      source: "authorization",
+      code: "FORBIDDEN",
+      message: "Not allowed",
+    },
   });
   assert.equal(fixture.order.includes("apply"), false);
 });
@@ -1011,7 +1133,7 @@ test("denial details must be JSON-safe", async () => {
   const fixture = executorFixture({
     authorize: () => ({
       allowed: false,
-      denial: { code: "NO", details: { invalid: undefined } },
+      denial: { code: "NO", publicDetails: { invalid: undefined } },
     }),
   });
   await assert.rejects(
@@ -1522,6 +1644,47 @@ test("cyclic outbox data fails with a typed error before writes", async () => {
       error.code === "INTERLOCK_SERIALIZATION_FAILED",
   );
   assert.equal(fixture.order.includes("apply"), false);
+});
+
+test("PostgreSQL driver qualifies default and custom schemas safely", async () => {
+  const run = async (schema) => {
+    const queries = [];
+    const client = {
+      on() {},
+      off() {},
+      release() {},
+      async query(text) {
+        queries.push(text);
+        return { rowCount: 1, rows: [{ fingerprint: "fingerprint" }] };
+      },
+    };
+    const driver = new PostgresDriver(
+      { connect: async () => client },
+      schema === undefined ? {} : { schema },
+    );
+    await driver.transaction((transaction) =>
+      driver.claimIdempotency(transaction, {
+        lifecycle: "item",
+        resourceId: "item-1",
+        key: "key",
+        fingerprint: "fingerprint",
+        createdAt: new Date("2026-01-01T00:00:00.000Z"),
+      }),
+    );
+    return queries.join("\n");
+  };
+  assert.match(await run(), /"public"\."interlock_idempotency"/);
+  assert.match(
+    await run('Tenant "One"; DROP SCHEMA public; --'),
+    /"Tenant ""One""; DROP SCHEMA public; --"\."interlock_idempotency"/,
+  );
+  for (const schema of ["", "a".repeat(64), "bad\0schema", 1])
+    assert.throws(
+      () => new PostgresDriver({}, { schema }),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_INVALID",
+    );
 });
 
 test("PostgreSQL operational codes remain distinct from domain conflicts", () => {

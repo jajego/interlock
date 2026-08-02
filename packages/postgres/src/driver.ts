@@ -21,6 +21,24 @@ export interface PgTransaction {
 
 const OUTBOX_BATCH_SIZE = 500;
 
+export interface PostgresDriverOptions {
+  schema?: string;
+}
+
+function quotedIdentifier(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    !value ||
+    value.includes("\0") ||
+    Buffer.byteLength(value) > 63
+  )
+    throw new InterlockError(
+      "INTERLOCK_DEFINITION_INVALID",
+      "PostgreSQL schema must be a non-empty identifier of at most 63 bytes without null characters.",
+    );
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
 class ScopedTransaction implements PgTransaction {
   active = true;
   constructor(private readonly client: PoolClient) {}
@@ -161,7 +179,28 @@ function rowToTransition(row: Record<string, unknown>): TransitionRecord {
 }
 
 export class PostgresDriver implements TransactionDriver<PgTransaction> {
-  constructor(private readonly pool: Pool) {}
+  private readonly tables: {
+    history: string;
+    idempotency: string;
+    outbox: string;
+  };
+
+  constructor(
+    private readonly pool: Pool,
+    options: PostgresDriverOptions = {},
+  ) {
+    if (!options || typeof options !== "object")
+      throw new InterlockError(
+        "INTERLOCK_DEFINITION_INVALID",
+        "PostgreSQL driver options must be an object.",
+      );
+    const schema = quotedIdentifier(options.schema ?? "public");
+    this.tables = Object.freeze({
+      history: `${schema}."interlock_transition_history"`,
+      idempotency: `${schema}."interlock_idempotency"`,
+      outbox: `${schema}."interlock_outbox"`,
+    });
+  }
 
   async transaction<Result>(
     operation: (transaction: PgTransaction) => Promise<Result>,
@@ -219,7 +258,7 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
     claim: IdempotencyClaim,
   ): Promise<IdempotencyClaimResult> {
     const inserted = await transaction.query(
-      `INSERT INTO interlock_idempotency (lifecycle, resource_id, idempotency_key, fingerprint, created_at)
+      `INSERT INTO ${this.tables.idempotency} (lifecycle, resource_id, idempotency_key, fingerprint, created_at)
        VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING RETURNING fingerprint`,
       [
         claim.lifecycle,
@@ -231,8 +270,8 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
     );
     if (inserted.rowCount === 1) return { status: "claimed" };
     const existing = await transaction.query(
-      `SELECT i.fingerprint, h.* FROM interlock_idempotency i
-       LEFT JOIN interlock_transition_history h ON h.id = i.transition_id
+      `SELECT i.fingerprint, h.* FROM ${this.tables.idempotency} i
+       LEFT JOIN ${this.tables.history} h ON h.id = i.transition_id
        WHERE i.lifecycle = $1 AND i.resource_id = $2 AND i.idempotency_key = $3`,
       [claim.lifecycle, claim.resourceId, claim.key],
     );
@@ -258,7 +297,7 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
     },
   ): Promise<void> {
     const result = await transaction.query(
-      `UPDATE interlock_idempotency SET transition_id = $4, completed_at = $5
+      `UPDATE ${this.tables.idempotency} SET transition_id = $4, completed_at = $5
        WHERE lifecycle = $1 AND resource_id = $2 AND idempotency_key = $3 AND transition_id IS NULL`,
       [
         completion.lifecycle,
@@ -280,7 +319,7 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
     value: TransitionRecord,
   ): Promise<void> {
     await transaction.query(
-      `INSERT INTO interlock_transition_history
+      `INSERT INTO ${this.tables.history}
        (id, lifecycle, resource_type, resource_id, event, from_state, to_state, previous_version, next_version, actor_type, actor_id, audit_data, metadata, correlation_id, causation_id, idempotency_key, request_fingerprint, definition_version, occurred_at)
        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)`,
       [
@@ -337,7 +376,7 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
         );
       }
       const result = await transaction.query(
-        `INSERT INTO interlock_outbox (id, lifecycle, resource_type, resource_id, transition_id, topic, message_key, payload, created_at)
+        `INSERT INTO ${this.tables.outbox} (id, lifecycle, resource_type, resource_id, transition_id, topic, message_key, payload, created_at)
          VALUES ${rows.join(",")}`,
         values,
       );

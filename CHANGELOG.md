@@ -10,3 +10,7 @@
 - Batched PostgreSQL outbox inserts, combined JSON validation and defensive
   snapshots with lazy error-path formatting, deterministic query-count checks,
   and reproducible performance evaluation scripts.
+- Replaced the pre-alpha binding API with immutable operation context,
+  event-correlated mutations, safe transaction and context defaults, singular
+  structured denials, asynchronous planning support, a named client type,
+  curated exports, and schema-qualified PostgreSQL tables.

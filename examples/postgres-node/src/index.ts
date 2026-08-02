@@ -1,10 +1,12 @@
 import {
   canonicalHash,
   createInterlock,
+  defineEvent,
   defineLifecycle,
   deny,
   allow,
   type InputSchema,
+  type MutationMap,
   type ResourceBinding,
   type TransactionDriver,
   type VersionToken,
@@ -27,10 +29,6 @@ interface Actor {
 interface Context {
   documents: { allVerified(id: string): Promise<boolean> };
 }
-interface Mutation {
-  decisionNote: string | null;
-}
-
 const noteSchema: InputSchema<{ note?: string }, { note?: string }> = {
   parse(input) {
     const submitted: unknown = input;
@@ -60,12 +58,12 @@ const noteSchema: InputSchema<{ note?: string }, { note?: string }> = {
     return { success: true, value: note === undefined ? {} : { note } };
   },
 };
+const event = defineEvent<Application, Actor, Context>();
 
 export const applicationLifecycle = defineLifecycle<
   Application,
   Actor,
-  Context,
-  Mutation
+  Context
 >()({
   name: "application",
   definitionVersion: "1",
@@ -85,10 +83,9 @@ export const applicationLifecycle = defineLifecycle<
       }),
   },
   events: {
-    approve: {
+    approve: event(noteSchema, {
       from: ["under_review"],
       to: "approved",
-      input: noteSchema,
       authorize: ({ actor }) =>
         actor.permissions.includes("applications:approve")
           ? allow()
@@ -111,17 +108,16 @@ export const applicationLifecycle = defineLifecycle<
           payload: { applicationId: resource.id, transitionId },
         },
       ],
-    },
-    reject: {
+    }),
+    reject: event(noteSchema, {
       from: ["under_review"],
       to: "rejected",
-      input: noteSchema,
       authorize: ({ actor }) =>
         actor.permissions.includes("applications:reject")
           ? allow()
           : deny({ code: "MISSING_PERMISSION" }),
       mutate: ({ input }) => ({ decisionNote: input.note ?? null }),
-    },
+    }),
   },
 });
 
@@ -136,16 +132,17 @@ const mapApplication = (row: Record<string, unknown>): Application => ({
 export const applicationBinding: ResourceBinding<
   PgTransaction,
   Application,
-  Mutation,
-  Context
+  Actor,
+  Context,
+  MutationMap<typeof applicationLifecycle.events>
 > = {
   transactionOptions: ({ mode }) =>
     mode === "advisory"
       ? { isolation: "read-committed", readOnly: true }
       : { isolation: "read-committed" },
-  loadPrimary: async (tx, id) => {
+  loadPrimary: async (tx, operation) => {
     const result = await tx.query("SELECT * FROM applications WHERE id = $1", [
-      id,
+      operation.id,
     ]);
     return result.rows[0] ? mapApplication(result.rows[0]) : null;
   },
@@ -160,7 +157,7 @@ export const applicationBinding: ResourceBinding<
         args.resource.id,
         args.toState,
         args.nextVersion,
-        args.mutation.decisionNote,
+        args.operation.mutation.decisionNote,
         args.fromState,
         args.expectedVersion,
       ],
@@ -175,7 +172,7 @@ export const applicationBinding: ResourceBinding<
       [
         args.updatedResource.id,
         args.transitionId,
-        args.mutation.decisionNote,
+        args.operation.mutation.decisionNote,
         args.occurredAt,
       ],
     );
@@ -220,10 +217,21 @@ export function createApplications(
 async function main() {
   const pool = new Pool({
     connectionString: process.env.TEST_DATABASE_URL,
-    options: "-c search_path=interlock_example",
   });
   try {
-    const applications = createApplications(pool);
+    const applications = createInterlock({
+      lifecycle: applicationLifecycle,
+      driver: new PostgresDriver(pool, { schema: "interlock_example" }),
+      binding: {
+        ...applicationBinding,
+        loadPrimary: async (transaction, operation) => {
+          await transaction.query(
+            'SET LOCAL search_path = "interlock_example"',
+          );
+          return applicationBinding.loadPrimary(transaction, operation);
+        },
+      },
+    });
     const request = {
       id: "example",
       event: "approve" as const,
@@ -243,8 +251,8 @@ async function main() {
       }),
     );
     const rows = await pool.query(`SELECT
-      (SELECT count(*)::int FROM interlock_transition_history) AS history,
-      (SELECT count(*)::int FROM interlock_outbox) AS outbox`);
+      (SELECT count(*)::int FROM "interlock_example"."interlock_transition_history") AS history,
+      (SELECT count(*)::int FROM "interlock_example"."interlock_outbox") AS outbox`);
     console.log("stored", rows.rows[0]);
   } finally {
     await pool.end();

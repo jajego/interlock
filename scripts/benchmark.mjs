@@ -76,14 +76,16 @@ function classify(sql) {
   if (normalized.startsWith("begin")) return "transaction.begin";
   if (normalized === "commit") return "transaction.commit";
   if (normalized === "rollback") return "transaction.rollback";
-  if (normalized.startsWith("insert into interlock_idempotency"))
+  if (normalized.startsWith('insert into "public"."interlock_idempotency"'))
     return "idempotency.claim";
   if (normalized.startsWith("select i.fingerprint")) return "idempotency.read";
-  if (normalized.startsWith("update interlock_idempotency"))
+  if (normalized.startsWith('update "public"."interlock_idempotency"'))
     return "idempotency.complete";
-  if (normalized.startsWith("insert into interlock_transition_history"))
+  if (
+    normalized.startsWith('insert into "public"."interlock_transition_history"')
+  )
     return "history.insert";
-  if (normalized.startsWith("insert into interlock_outbox"))
+  if (normalized.startsWith('insert into "public"."interlock_outbox"'))
     return "outbox.insert";
   if (normalized.startsWith("update benchmark_resources"))
     return "primary.update";
@@ -139,7 +141,12 @@ function payload(bytes) {
   return { values, tail: "x".repeat(Math.max(0, remaining)) };
 }
 
-function lifecycleFor({ guards = 0, outbox = 0, jsonBytes = 0 }) {
+function lifecycleFor({
+  guards = 0,
+  outbox = 0,
+  jsonBytes = 0,
+  asyncProjections = false,
+}) {
   const sharedPayload = payload(jsonBytes);
   return defineLifecycle()({
     name: `benchmark-${guards}-${outbox}-${jsonBytes}`,
@@ -157,7 +164,7 @@ function lifecycleFor({ guards = 0, outbox = 0, jsonBytes = 0 }) {
           name: `guard-${index}`,
           evaluate: () => true,
         })),
-        mutate: () => ({}),
+        mutate: asyncProjections ? async () => ({}) : () => ({}),
         audit: jsonBytes ? () => sharedPayload : undefined,
         outbox: () =>
           Array.from({ length: outbox }, (_, index) => ({
@@ -173,10 +180,10 @@ function lifecycleFor({ guards = 0, outbox = 0, jsonBytes = 0 }) {
 function subjectFor(pool, options) {
   const binding = {
     transactionOptions: () => ({ isolation: "read-committed" }),
-    loadPrimary: async (transaction, id) => {
+    loadPrimary: async (transaction, operation) => {
       const result = await transaction.query(
         "SELECT id, state, version::text version FROM benchmark_resources WHERE id = $1",
-        [id],
+        [operation.id],
       );
       return result.rows[0] ?? null;
     },
@@ -202,10 +209,10 @@ function subjectFor(pool, options) {
     },
     ...(options.hydrate
       ? {
-          hydrateBeforeCommit: async (transaction, resource) => {
+          hydrateBeforeCommit: async (transaction, args) => {
             const result = await transaction.query(
               "SELECT /* hydrate */ id, state, version::text version FROM benchmark_resources WHERE id = $1",
-              [resource.id],
+              [args.resource.id],
             );
             return result.rows[0];
           },
@@ -480,6 +487,20 @@ const scenarios = [
   [
     "first-idempotent-execution",
     { idempotent: true, outbox: 0, guards: 0, jsonBytes: 0 },
+  ],
+  [
+    "synchronous-projections",
+    { idempotent: false, outbox: 0, guards: 0, jsonBytes: 0 },
+  ],
+  [
+    "asynchronous-projections",
+    {
+      idempotent: false,
+      outbox: 0,
+      guards: 0,
+      jsonBytes: 0,
+      asyncProjections: true,
+    },
   ],
   ["outbox-1", { idempotent: false, outbox: 1, guards: 0, jsonBytes: 0 }],
   ["outbox-5", { idempotent: false, outbox: 5, guards: 0, jsonBytes: 0 }],

@@ -4,12 +4,15 @@ import { readFile } from "node:fs/promises";
 import {
   canonicalHash,
   createInterlock,
+  defineEvent,
   defineLifecycle,
   InterlockError,
   noInput,
+  primaryRowOnly,
   type IdempotencyClaim,
   type IdempotencyClaimResult,
   type OutboxInsert,
+  type MutationMap,
   type ResourceBinding,
   type TransactionDriver,
   type TransactionOptions,
@@ -26,7 +29,7 @@ type Resource = {
   version: VersionToken;
 };
 
-const lifecycle = defineLifecycle<Resource, undefined, object, object>()({
+const lifecycle = defineLifecycle<Resource>()({
   name: "prisma-spike",
   states: ["review", "approved"],
   history: { resourceType: "application" },
@@ -35,15 +38,13 @@ const lifecycle = defineLifecycle<Resource, undefined, object, object>()({
       canonicalHash({ resourceId, event, expectedVersion }),
   },
   events: {
-    approve: {
+    approve: defineEvent<Resource>()(noInput, {
       from: ["review"],
       to: "approved",
-      input: noInput,
-      mutate: () => ({}),
       outbox: ({ resource }) => [
         { topic: "approved", payload: { id: resource.id } },
       ],
-    },
+    }),
   },
 });
 
@@ -188,15 +189,20 @@ class PrismaDriver implements TransactionDriver<Transaction> {
 }
 
 const pids: number[] = [];
-const binding: ResourceBinding<Transaction, Resource, object, object> = {
-  transactionOptions: () => ({ isolation: "read-committed" }),
-  loadPrimary: async (transaction, id) => {
+const binding: ResourceBinding<
+  Transaction,
+  Resource,
+  undefined,
+  undefined,
+  MutationMap<typeof lifecycle.events>
+> = {
+  loadPrimary: async (transaction, operation) => {
     const pid = await transaction.$queryRaw<Array<{ pid: number }>>`
       SELECT pg_backend_pid() pid
     `;
     pids.push(Number(pid[0]?.pid));
     const row = await transaction.spikeApplication.findUnique({
-      where: { id },
+      where: { id: operation.id },
     });
     return row
       ? {
@@ -235,8 +241,7 @@ const binding: ResourceBinding<Transaction, Resource, object, object> = {
       },
     };
   },
-  contextFactory: { create: () => ({}) },
-  consistency: () => ({ strategy: "none", notes: "No related data." }),
+  consistency: primaryRowOnly,
 };
 
 const connectionString = process.env.TEST_DATABASE_URL;
