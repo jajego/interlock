@@ -25,7 +25,7 @@
     "provenance": true
   },
   "engines": {
-    "node": ">=26"
+    "node": ">=22.14.0"
   },
   "exports": {
     ".": {

@@ -176,7 +176,7 @@ async function parseSchema(
   schema: AnySchema | undefined,
   input: unknown,
 ): Promise<ParseResult<unknown>> {
-  if (!schema) {
+  if (schema === undefined) {
     return input === undefined
       ? { success: true, value: undefined }
       : {
@@ -413,8 +413,8 @@ export function defineLifecycle<
         event.guards?.some((guard) => typeof guard.evaluate !== "function")
       )
         invalid(`Event ${name} has invalid callbacks.`);
-      if (event.input) {
-        if (typeof event.input !== "object")
+      if (event.input !== undefined) {
+        if (!event.input || typeof event.input !== "object")
           invalid(`Event ${name} has an unsupported input schema.`);
         if ("parse" in event.input) {
           if (typeof event.input.parse !== "function")
@@ -437,7 +437,9 @@ export function defineLifecycle<
         Object.freeze({
           ...event,
           from: Object.freeze([...event.from]),
-          ...(event.input ? { input: snapshotSchema(event.input) } : {}),
+          ...(event.input === undefined
+            ? {}
+            : { input: snapshotSchema(event.input) }),
           ...(event.guards
             ? {
                 guards: Object.freeze(

@@ -297,6 +297,10 @@ test("lifecycle definitions reject malformed public fields", () => {
       ...valid(),
       events: { move: { ...valid().events.move, input: {} } },
     },
+    ...[null, false, 0, ""].map((input) => ({
+      ...valid(),
+      events: { move: { ...valid().events.move, input } },
+    })),
     {
       ...valid(),
       events: { move: { ...valid().events.move, input: { parse: true } } },
@@ -756,6 +760,18 @@ test("version and primary-update conflicts return canonical outcomes", async () 
     );
     assert.equal(fixture.order.includes("history"), false);
   }
+
+  const actual = { state: "a", version: "2" };
+  const copied = await executorFixture({
+    applied: { status: "conflict", actual },
+  }).subject.transition(transitionRequest);
+  actual.state = "mutated";
+  actual.version = "9";
+  assert.deepEqual(copied, {
+    status: "conflict",
+    expected: "1",
+    actual: { state: "a", version: "2" },
+  });
 });
 
 test("idempotency claim conflicts and malformed results are distinguished", async () => {
@@ -786,6 +802,25 @@ test("request identity and expected-version boundaries reject malformed values",
     const result = await executorFixture().subject.transition(request);
     assert.equal(result.status, status);
   }
+});
+
+test("untyped request envelopes reject missing and malformed protocol fields", async () => {
+  for (const request of [
+    undefined,
+    null,
+    "request",
+    { ...transitionRequest, correlationId: 123 },
+    { ...transitionRequest, correlationId: "" },
+    { ...transitionRequest, causationId: 123 },
+    { ...transitionRequest, causationId: "" },
+  ]) {
+    const result = await executorFixture().subject.transition(request);
+    assert.equal(result.status, "invalid-input");
+  }
+  assert.equal(
+    (await executorFixture().subject.assess(undefined)).status,
+    "invalid-input",
+  );
 });
 
 test("outbox descriptors enforce shape and exact byte limits before writes", async () => {
@@ -1004,6 +1039,20 @@ test("idempotent transitions reject unsupported isolation before transaction", a
     );
     assert.equal(fixture.getClaim(), undefined);
   }
+});
+
+test("authoritative transitions reject read-only transaction options", async () => {
+  const fixture = executorFixture({ transactionOptions: { readOnly: true } });
+  await assert.rejects(
+    fixture.subject.transition({
+      ...transitionRequest,
+      idempotency: undefined,
+    }),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+  );
+  assert.equal(fixture.order.includes("apply"), false);
 });
 
 test("hydrateBeforeCommit must preserve identity, state, and version", async () => {
@@ -1346,8 +1395,6 @@ test("duplicate records must match the normalized request", async () => {
     { ...validDuplicate, event: "other" },
     { ...validDuplicate, idempotencyKey: "other" },
     { ...validDuplicate, requestFingerprint: "other" },
-    { ...validDuplicate, fromState: "wrong" },
-    { ...validDuplicate, toState: "wrong" },
     { ...validDuplicate, previousVersion: "bad" },
     { ...validDuplicate, occurredAt: new Date("invalid") },
     { ...validDuplicate, id: "" },
@@ -1367,6 +1414,23 @@ test("duplicate records must match the normalized request", async () => {
     );
     assert.equal(fixture.order.includes("authorize"), false);
   }
+});
+
+test("duplicates replay historical edges after lifecycle graph changes", async () => {
+  const historical = {
+    ...validDuplicate,
+    fromState: "historical-draft",
+    toState: "historical-approved",
+    definitionVersion: "1",
+  };
+  const fixture = executorFixture({
+    claim: { status: "duplicate", transition: historical },
+  });
+  const result = await fixture.subject.transition(transitionRequest);
+  assert.equal(result.status, "committed");
+  assert.equal(result.duplicate, true);
+  assert.equal(result.transition.fromState, "historical-draft");
+  assert.equal(result.transition.toState, "historical-approved");
 });
 
 test("valid duplicates skip policy and canonical history cannot be substituted", async () => {

@@ -7,7 +7,7 @@
 **Type-safe, atomic lifecycle transitions for PostgreSQL.**
 
 Interlock gives important domain changes one dependable transaction boundary.
-Your version-checked resource update, related writes, immutable history,
+Your version-checked resource update, related writes, append-only history,
 idempotency result, and outbox messages commit together or roll back together.
 
 XState models complex statecharts. Temporal runs durable workflows. Interlock
@@ -23,21 +23,52 @@ where a partial write would be expensive or difficult to repair.
 - **Type-safe commands:** lifecycle definitions infer valid event names and
   input types for `assess()` and `transition()`.
 - **Safe concurrency:** compare-and-swap updates check both state and version.
-- **Built-in audit trail:** every committed transition has an immutable record.
+- **Built-in audit trail:** the protocol appends a record for every committed
+  transition.
 - **Retry-friendly APIs:** idempotency keys return the original committed
   transition instead of applying it twice.
 - **PostgreSQL-native:** bring your own `pg` pool and write ordinary SQL against
   ordinary application tables.
 - **Small footprint:** `@interlock/core` has zero external runtime dependencies.
 
+| Tool                | Best fit                                                                |
+| ------------------- | ----------------------------------------------------------------------- |
+| **Interlock**       | One version-checked domain transition and all of its PostgreSQL writes. |
+| **XState**          | Rich in-process statecharts and state-machine modeling.                 |
+| **Temporal**        | Durable, long-running workflows across processes and services.          |
+| **ORM transaction** | General database work when you own the transaction protocol yourself.   |
+
 ## Install
 
 ```sh
-npm install @interlock/core @interlock/postgres pg
+npm install @interlock/core@next @interlock/postgres@next pg
 ```
 
 Your application owns the `pg` `Pool`. The PostgreSQL package imports `pg` only
 as a type and declares it as a peer dependency.
+
+## Replace transaction scripts with one command
+
+Without Interlock, each command handler must remember the same protocol:
+
+```ts
+await client.query("BEGIN");
+await claimIdempotency(client, command);
+await updateOrderIfVersionMatches(client, command);
+await insertDecision(client, command);
+await insertHistory(client, command);
+await insertOutbox(client, command);
+await completeIdempotency(client, command);
+await client.query("COMMIT");
+```
+
+With Interlock, the lifecycle and binding define those pieces once:
+
+```ts
+const result = await orders.transition(command);
+```
+
+Interlock owns the transaction boundary; your binding still owns ordinary SQL.
 
 ## Quick start
 
@@ -173,10 +204,47 @@ Operational and integration contract failures throw stable `InterlockError`
 codes. Use `isInterlockError(error)` rather than relying on `instanceof` across
 multiple physical package copies.
 
+Handle every expected result explicitly:
+
+```ts
+switch (result.status) {
+  case "committed":
+    return result.duplicate ? "already-applied" : "applied";
+  case "denied":
+  case "conflict":
+  case "not-found":
+  case "idempotency-conflict":
+  case "invalid-input":
+  case "unknown-event":
+    return result.status;
+  default: {
+    const exhaustive: never = result;
+    return exhaustive;
+  }
+}
+```
+
 ## How it works
 
 Before opening a transaction, Interlock validates the command and computes its
-idempotency fingerprint. Inside one driver-owned transaction it:
+idempotency fingerprint.
+
+```mermaid
+flowchart LR
+  A["Validate command"] --> B["Begin transaction"]
+  B --> C["Claim idempotency"]
+  C --> D["Load and check resource"]
+  D --> E["Apply primary and related writes"]
+  E --> F["Append history and outbox"]
+  F --> G["Complete idempotency"]
+  G --> H["Commit"]
+  C -. expected outcome .-> R["Rollback"]
+  D -. expected outcome .-> R
+  E -. failure .-> R
+  F -. failure .-> R
+```
+
+Inside one driver-owned transaction it:
 
 1. claims the idempotency key;
 2. loads the primary resource;
@@ -184,12 +252,15 @@ idempotency fingerprint. Inside one driver-owned transaction it:
 4. prepares mutation, audit, and outbox data;
 5. conditionally updates state and version;
 6. applies related writes;
-7. inserts immutable history and outbox rows;
+7. inserts append-only history and outbox rows;
 8. completes idempotency and commits.
 
 Expected outcomes after an idempotency claim force rollback before being
 returned. A same-key duplicate returns the stored transition identity without
 rerunning current policy or exposing a potentially unrelated current resource.
+Historical duplicate edges are validated as stored history, not against the
+current lifecycle graph, so a deployment may evolve an event without breaking
+replay of an already committed key.
 
 ## PostgreSQL setup
 
@@ -239,7 +310,9 @@ atomic; external delivery remains the application's responsibility.
 
 Applications must control direct writes to protected state and version columns.
 Bindings must also document how related facts used by guards are stabilized. The
-reference example demonstrates aggregate versioning for this purpose.
+reference example demonstrates aggregate versioning for this purpose. For
+database-enforced append-only history, deny application roles `UPDATE` and
+`DELETE` privileges on `interlock_transition_history`.
 
 A connection loss during commit reports `INTERLOCK_COMMIT_OUTCOME_UNKNOWN`.
 Reconcile through stored idempotency and history data instead of blindly
@@ -254,7 +327,7 @@ returning.
 
 The `0.1.0-alpha.0` release tests:
 
-- Node.js 26+;
+- Node.js 22.14+ and 26;
 - TypeScript 5.0+;
 - PostgreSQL 16;
 - `pg` 8.16.3 through 8.x.

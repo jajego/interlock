@@ -5,6 +5,11 @@ stored transition identity before current policy is rerun. A rolled-back owner
 leaves no claim. There are no leases, polling, expiry, or durable in-progress
 states.
 
+Duplicate history is validated for shape, lifecycle, resource, event, key, and
+fingerprint, but its historical `fromState` and `toState` are not compared with
+the current lifecycle edge. This preserves the original committed result after a
+later deployment evolves the lifecycle graph.
+
 The key is scoped by lifecycle and resource ID. PostgreSQL's unique constraint
 coordinates concurrent inserts: a competitor waits for the owner's uniqueness
 outcome, observes its completed transition after commit, or inserts after owner

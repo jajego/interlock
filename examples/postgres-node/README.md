@@ -2,7 +2,7 @@
 
 This example owns an isolated `interlock_example` schema. It demonstrates a
 read-only assessment, one committed approval, a same-key duplicate, a stale
-version conflict, a related write, immutable history, and an outbox row.
+version conflict, a related write, append-only history, and an outbox row.
 
 ```sh
 docker compose up -d --wait

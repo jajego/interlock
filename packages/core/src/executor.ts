@@ -316,6 +316,46 @@ export function createInterlock<
     idempotency?: { key: string };
   };
 
+  function invalidRequestEnvelope(
+    request: unknown,
+  ): NormalizationFailure | undefined {
+    if (!record(request))
+      return {
+        ok: false,
+        result: {
+          status: "invalid-input",
+          issues: [
+            {
+              path: ["request"],
+              code: "INVALID_REQUEST",
+              message: "Request must be an object.",
+            },
+          ],
+        },
+      };
+    for (const [field, code] of [
+      ["correlationId", "INVALID_CORRELATION_ID"],
+      ["causationId", "INVALID_CAUSATION_ID"],
+    ] as const) {
+      const value = request[field];
+      if (value !== undefined && !nonempty(value))
+        return {
+          ok: false,
+          result: {
+            status: "invalid-input",
+            issues: [
+              {
+                path: [field],
+                code,
+                message: `${field} must be a non-empty string.`,
+              },
+            ],
+          },
+        };
+    }
+    return undefined;
+  }
+
   function snapshotRequest(request: BoundaryRequest<Actor>): SnapshotRequest {
     const metadata =
       request.metadata === undefined
@@ -428,7 +468,6 @@ export function createInterlock<
     value: unknown,
     request: { id: string; event: string; idempotency: { key: string } },
     fingerprint: string,
-    event: LifecycleEvent,
   ): TransitionRecord {
     if (!record(value))
       throw new InterlockError(
@@ -447,8 +486,6 @@ export function createInterlock<
       !nonempty(value.id) ||
       !nonempty(value.fromState) ||
       !nonempty(value.toState) ||
-      !event.from.includes(value.fromState) ||
-      value.toState !== event.to ||
       !previous.success ||
       !next.success ||
       BigInt(next.value) !== BigInt(previous.value) + 1n ||
@@ -721,6 +758,8 @@ export function createInterlock<
   async function assess(
     request: AssessmentRequestFor<Schemas, Actor>,
   ): Promise<AssessmentResult> {
+    const invalidEnvelope = invalidRequestEnvelope(request);
+    if (invalidEnvelope) return invalidEnvelope.result;
     const command = snapshotRequest(request as BoundaryRequest<Actor>);
     const normalized = await normalizeEvent(command);
     if (!normalized.ok) return normalized.result;
@@ -805,6 +844,8 @@ export function createInterlock<
   async function transition(
     request: TransitionRequestFor<Schemas, Actor>,
   ): Promise<TransitionResult<Resource>> {
+    const invalidEnvelope = invalidRequestEnvelope(request);
+    if (invalidEnvelope) return invalidEnvelope.result;
     const command = snapshotTransitionRequest(
       request as BoundaryRequest<Actor> & {
         expectedVersion: unknown;
@@ -817,6 +858,11 @@ export function createInterlock<
       "authoritative",
       command.event,
     );
+    if (authoritativeOptions.readOnly === true)
+      throw new InterlockError(
+        "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+        "Authoritative transactions cannot be read-only.",
+      );
     if (
       command.idempotency &&
       (authoritativeOptions.isolation ?? "read-committed") !== "read-committed"
@@ -870,7 +916,6 @@ export function createInterlock<
                   idempotency: command.idempotency,
                 },
                 normalized.fingerprint as string,
-                normalized.event,
               ),
             };
         }
@@ -1165,21 +1210,26 @@ export function createInterlock<
           );
         if (applied.status === "not-found") rollback({ status: "not-found" });
         if (applied.status === "conflict") {
+          let actual;
           if (applied.actual !== undefined) {
+            const version = record(applied.actual)
+              ? parseVersionToken(applied.actual.version)
+              : { success: false as const };
             if (
               !record(applied.actual) ||
               !nonempty(applied.actual.state) ||
-              !parseVersionToken(applied.actual.version).success
+              !version.success
             )
               throw new InterlockError(
                 "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
                 "Binding returned an invalid conflict snapshot.",
               );
+            actual = { state: applied.actual.state, version: version.value };
           }
           rollback({
             status: "conflict",
             expected: normalized.expectedVersion,
-            ...(applied.actual ? { actual: applied.actual } : {}),
+            ...(actual ? { actual } : {}),
           });
         }
         if (applied.status !== "applied" || !("resource" in applied))
