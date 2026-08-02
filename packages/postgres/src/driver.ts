@@ -241,14 +241,14 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
       throw normalizePostgresError(error, committing);
     } finally {
       try {
-        client.release(releaseFailure ?? emittedFailure);
-      } catch {
-        /* Pool cleanup must not replace the transaction outcome. */
-      }
-      try {
         client.off("error", captureFailure);
       } catch {
         /* Listener cleanup must not replace the transaction outcome. */
+      }
+      try {
+        client.release(releaseFailure ?? emittedFailure);
+      } catch {
+        /* Pool cleanup must not replace the transaction outcome. */
       }
     }
   }
