@@ -51,15 +51,17 @@ export type Schema<Submitted, Parsed> =
 
 export interface InternalDenial {
   code: string;
-  publicMessage?: string;
+  message?: string;
+  publicDetails?: JsonValue;
   privateMessage?: string;
-  details?: JsonValue;
+  privateDetails?: JsonValue;
 }
 export interface PublicDenial {
   source: "state" | "authorization" | "guard";
   rule?: string;
   code: string;
-  publicMessage?: string;
+  message?: string;
+  publicDetails?: JsonValue;
 }
 export type Decision =
   boolean | { allowed: true } | { allowed: false; denial: InternalDenial };
@@ -85,6 +87,28 @@ export type RelatedDataConsistency = {
     | "custom";
   notes: string;
 };
+
+export const primaryRowOnly = {
+  strategy: "none",
+  notes: "This event depends only on the primary resource row.",
+} as const satisfies RelatedDataConsistency;
+
+export interface InterlockOperation<Actor, Event extends string = string> {
+  readonly mode: AssessmentMode;
+  readonly id: string;
+  readonly event: Event;
+  readonly actor: Actor;
+  readonly metadata?: JsonValue;
+  readonly correlationId?: string;
+  readonly causationId?: string;
+}
+
+export type WriteOperation<Actor, Mutations extends Record<string, unknown>> = {
+  [Event in Extract<keyof Mutations, string>]: InterlockOperation<
+    Actor,
+    Event
+  > & { readonly mutation: Mutations[Event] };
+}[Extract<keyof Mutations, string>];
 
 export interface TransitionRecord {
   id: string;
@@ -164,12 +188,19 @@ export interface TransactionDriver<Transaction> {
   ): Promise<void>;
 }
 
-export interface ResourceBinding<Transaction, Resource, Mutation, Context> {
-  transactionOptions(args: {
-    mode: AssessmentMode;
-    event: string;
-  }): TransactionOptions;
-  loadPrimary(transaction: Transaction, id: string): Promise<Resource | null>;
+interface ResourceBindingBase<
+  Transaction,
+  Resource,
+  Actor,
+  Mutations extends Record<string, unknown>,
+> {
+  transactionOptions?(
+    operation: InterlockOperation<Actor, Extract<keyof Mutations, string>>,
+  ): TransactionOptions;
+  loadPrimary(
+    transaction: Transaction,
+    operation: InterlockOperation<Actor, Extract<keyof Mutations, string>>,
+  ): Promise<Resource | null>;
   getId(resource: Resource): string;
   getState(resource: Resource): string;
   getVersion(resource: Resource): VersionToken;
@@ -181,7 +212,7 @@ export interface ResourceBinding<Transaction, Resource, Mutation, Context> {
       toState: string;
       expectedVersion: VersionToken;
       nextVersion: VersionToken;
-      mutation: Mutation;
+      operation: WriteOperation<Actor, Mutations>;
     },
   ): Promise<
     | { status: "applied"; resource: Resource }
@@ -193,23 +224,51 @@ export interface ResourceBinding<Transaction, Resource, Mutation, Context> {
     args: {
       previousResource: Resource;
       updatedResource: Resource;
-      mutation: Mutation;
-      transitionId: string;
+      operation: WriteOperation<Actor, Mutations>;
+      readonly transitionId: string;
       occurredAt: Date;
     },
   ): Promise<void>;
   hydrateBeforeCommit?(
     transaction: Transaction,
-    resource: Resource,
+    args: {
+      resource: Resource;
+      operation: WriteOperation<Actor, Mutations>;
+    },
   ): Promise<Resource>;
-  contextFactory: {
-    create(
-      transaction: Transaction,
-      options: { mode: AssessmentMode; event: string },
-    ): Context;
-  };
-  consistency(event: string): RelatedDataConsistency;
+  consistency:
+    | RelatedDataConsistency
+    | ((event: Extract<keyof Mutations, string>) => RelatedDataConsistency);
 }
+
+type ContextBinding<Transaction, Actor, Context, Event extends string> = [
+  Context,
+] extends [undefined | void]
+  ? {
+      contextFactory?: {
+        create(
+          transaction: Transaction,
+          operation: InterlockOperation<Actor, Event>,
+        ): Context | PromiseLike<Context>;
+      };
+    }
+  : {
+      contextFactory: {
+        create(
+          transaction: Transaction,
+          operation: InterlockOperation<Actor, Event>,
+        ): Context | PromiseLike<Context>;
+      };
+    };
+
+export type ResourceBinding<
+  Transaction,
+  Resource,
+  Actor,
+  Context,
+  Mutations extends Record<string, unknown>,
+> = ResourceBindingBase<Transaction, Resource, Actor, Mutations> &
+  ContextBinding<Transaction, Actor, Context, Extract<keyof Mutations, string>>;
 
 export type TransitionResult<Resource> =
   | {
@@ -224,7 +283,7 @@ export type TransitionResult<Resource> =
       event: string;
       currentState: string;
       targetState?: string;
-      reasons: readonly PublicDenial[];
+      reason: PublicDenial;
     }
   | {
       status: "conflict";
@@ -247,7 +306,7 @@ export type AssessmentResult =
       event: string;
       currentState: string;
       targetState?: string;
-      reasons: readonly PublicDenial[];
+      reason: PublicDenial;
     }
   | { status: "not-found" }
   | { status: "unknown-event"; event: string }

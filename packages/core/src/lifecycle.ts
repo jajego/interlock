@@ -17,6 +17,8 @@ export interface ProjectionArgs<Resource, Actor, Context, Input> {
   clock: { occurredAt: Date };
 }
 
+type ProjectionResult<Value> = Value | PromiseLike<Value>;
+
 export type AssessmentArgs<Resource, Actor, Context, Input> = Pick<
   ProjectionArgs<Resource, Actor, Context, Input>,
   "resource" | "actor" | "context" | "input"
@@ -62,7 +64,7 @@ export type ParsedInputOf<SchemaType> =
       ? Parsed
       : undefined;
 
-type EventCore<Resource, Actor, Context, Mutation, Parsed> = {
+type EventCore<Resource, Actor, Context, Parsed> = {
   from: readonly string[];
   to: string;
   authorize?: (
@@ -74,12 +76,25 @@ type EventCore<Resource, Actor, Context, Mutation, Parsed> = {
       args: AssessmentArgs<Resource, Actor, Context, Parsed>,
     ): Decision | Promise<Decision>;
   }[];
-  mutate(args: ProjectionArgs<Resource, Actor, Context, Parsed>): Mutation;
-  audit?: (args: ProjectionArgs<Resource, Actor, Context, Parsed>) => JsonValue;
+  audit?: (
+    args: ProjectionArgs<Resource, Actor, Context, Parsed>,
+  ) => ProjectionResult<JsonValue>;
   outbox?: (
     args: ProjectionArgs<Resource, Actor, Context, Parsed>,
-  ) => readonly { topic: string; key?: string; payload: JsonValue }[];
+  ) => ProjectionResult<
+    readonly { topic: string; key?: string; payload: JsonValue }[]
+  >;
 };
+
+type MutationProjection<Resource, Actor, Context, Parsed, Mutation> = [
+  Mutation,
+] extends [undefined]
+  ? { mutate?: undefined }
+  : {
+      mutate(
+        args: ProjectionArgs<Resource, Actor, Context, Parsed>,
+      ): ProjectionResult<Mutation>;
+    };
 
 export type EventDefinition<
   Resource,
@@ -87,7 +102,14 @@ export type EventDefinition<
   Context,
   Mutation,
   SchemaType extends AnySchema | undefined = undefined,
-> = EventCore<Resource, Actor, Context, Mutation, ParsedInputOf<SchemaType>> &
+> = EventCore<Resource, Actor, Context, ParsedInputOf<SchemaType>> &
+  MutationProjection<
+    Resource,
+    Actor,
+    Context,
+    ParsedInputOf<SchemaType>,
+    Mutation
+  > &
   (SchemaType extends AnySchema
     ? { input: SchemaType }
     : { input?: undefined });
@@ -97,14 +119,16 @@ export type EventMap<
   Resource,
   Actor,
   Context,
-  Mutation,
   Schemas extends EventSchemaMap = EventSchemaMap,
+  Mutations extends { [Event in keyof Schemas]: unknown } = {
+    [Event in keyof Schemas]: unknown;
+  },
 > = {
   readonly [Event in keyof Schemas]: EventDefinition<
     Resource,
     Actor,
     Context,
-    Mutation,
+    Mutations[Event],
     Schemas[Event]
   >;
 };
@@ -113,16 +137,18 @@ export interface LifecycleDefinition<
   Resource,
   Actor,
   Context,
-  Mutation,
   Schemas extends EventSchemaMap,
+  Mutations extends { [Event in keyof Schemas]: unknown },
 > {
   name: string;
   definitionVersion?: string;
   states: readonly string[];
-  events: EventMap<Resource, Actor, Context, Mutation, Schemas>;
+  events: EventMap<Resource, Actor, Context, Schemas, Mutations>;
   history: {
     resourceType: string;
-    actor?: (actor: Actor) => { actorType?: string; actorId?: string };
+    actor?: (
+      actor: Actor,
+    ) => ProjectionResult<{ actorType?: string; actorId?: string }>;
     metadata?: (args: {
       request: {
         resourceId: string;
@@ -131,7 +157,7 @@ export interface LifecycleDefinition<
       };
       actor: Actor;
       resource: Resource;
-    }) => JsonValue;
+    }) => ProjectionResult<JsonValue>;
   };
   idempotency?: {
     fingerprint(args: {
@@ -149,16 +175,27 @@ export interface Lifecycle<
   Resource,
   Actor,
   Context,
-  Mutation,
   Schemas extends EventSchemaMap,
-> extends LifecycleDefinition<Resource, Actor, Context, Mutation, Schemas> {
+  Mutations extends { [Event in keyof Schemas]: unknown },
+  Events extends Record<string, unknown>,
+> extends Omit<
+  LifecycleDefinition<Resource, Actor, Context, Schemas, Mutations>,
+  "events"
+> {
+  events: Events;
   getEvent(
     name: string,
   ):
-    | EventMap<Resource, Actor, Context, Mutation, Schemas>[keyof Schemas]
+    | EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
+        keyof Schemas,
+        string
+      >]
     | undefined;
   parseInput(
-    event: EventMap<Resource, Actor, Context, Mutation, Schemas>[keyof Schemas],
+    event: EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
+      keyof Schemas,
+      string
+    >],
     input: unknown,
   ): Promise<ParseResult<unknown>>;
 }
@@ -299,33 +336,172 @@ function snapshotSchema(schema: AnySchema | undefined): AnySchema | undefined {
   });
 }
 
-export function defineLifecycle<Resource, Actor, Context, Mutation>(): <
+export type EventMutation<Event> = Event extends {
+  mutate: (...args: never[]) => infer Result;
+}
+  ? Awaited<Result>
+  : undefined;
+
+export type MutationMap<Events> = {
+  [Event in keyof Events]: EventMutation<Events[Event]>;
+};
+
+export interface EventBuilder<Resource, Actor, Context> {
+  <
+    SchemaType extends AnySchema,
+    Mutation,
+    const Definition extends EventCore<
+      Resource,
+      Actor,
+      Context,
+      ParsedInputOf<SchemaType>
+    > & {
+      mutate(
+        args: ProjectionArgs<
+          Resource,
+          Actor,
+          Context,
+          ParsedInputOf<SchemaType>
+        >,
+      ): ProjectionResult<Mutation>;
+    },
+  >(
+    schema: SchemaType,
+    definition: Definition,
+  ): Definition & { readonly input: SchemaType };
+  <
+    SchemaType extends AnySchema,
+    const Definition extends EventCore<
+      Resource,
+      Actor,
+      Context,
+      ParsedInputOf<SchemaType>
+    > & { mutate?: undefined },
+  >(
+    schema: SchemaType,
+    definition: Definition,
+  ): Definition & {
+    readonly input: SchemaType;
+    readonly mutate: () => undefined;
+  };
+  <
+    Mutation,
+    const Definition extends EventCore<Resource, Actor, Context, undefined> & {
+      mutate(
+        args: ProjectionArgs<Resource, Actor, Context, undefined>,
+      ): ProjectionResult<Mutation>;
+    },
+  >(
+    definition: Definition,
+  ): Definition;
+  <
+    const Definition extends EventCore<Resource, Actor, Context, undefined> & {
+      mutate?: undefined;
+    },
+  >(
+    definition: Definition,
+  ): Definition & { readonly mutate: () => undefined };
+}
+
+export function defineEvent<
+  Resource,
+  Actor = undefined,
+  Context = undefined,
+>(): EventBuilder<Resource, Actor, Context> {
+  return ((schemaOrDefinition: AnySchema | object, definition?: object) => {
+    const event =
+      definition === undefined
+        ? schemaOrDefinition
+        : { ...definition, input: schemaOrDefinition };
+    return "mutate" in event ? event : { ...event, mutate: () => undefined };
+  }) as EventBuilder<Resource, Actor, Context>;
+}
+
+export function defineLifecycle<
+  Resource,
+  Actor = undefined,
+  Context = undefined,
+>(): <
   const Schemas extends EventSchemaMap,
+  const Mutations extends { [Event in keyof Schemas]: unknown },
+  const Definition extends { readonly events: Record<string, unknown> },
 >(
-  definition: LifecycleDefinition<Resource, Actor, Context, Mutation, Schemas>,
-) => Lifecycle<Resource, Actor, Context, Mutation, Schemas>;
+  definition: LifecycleDefinition<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    Mutations
+  > &
+    Definition,
+) => Lifecycle<
+  Resource,
+  Actor,
+  Context,
+  Schemas,
+  Mutations,
+  Definition["events"]
+>;
 export function defineLifecycle<
   Resource,
   Actor,
   Context,
-  Mutation,
   const Schemas extends EventSchemaMap,
+  const Mutations extends { [Event in keyof Schemas]: unknown },
+  const Definition extends { readonly events: Record<string, unknown> },
 >(
-  definition: LifecycleDefinition<Resource, Actor, Context, Mutation, Schemas>,
-): Lifecycle<Resource, Actor, Context, Mutation, Schemas>;
+  definition: LifecycleDefinition<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    Mutations
+  > &
+    Definition,
+): Lifecycle<
+  Resource,
+  Actor,
+  Context,
+  Schemas,
+  Mutations,
+  Definition["events"]
+>;
 export function defineLifecycle<
   Resource,
   Actor,
   Context,
-  Mutation,
   const Schemas extends EventSchemaMap,
+  const Mutations extends { [Event in keyof Schemas]: unknown },
+  const Definition extends { readonly events: Record<string, unknown> },
 >(
-  definition?: LifecycleDefinition<Resource, Actor, Context, Mutation, Schemas>,
+  definition?: LifecycleDefinition<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    Mutations
+  > &
+    Definition,
 ):
-  | Lifecycle<Resource, Actor, Context, Mutation, Schemas>
+  | Lifecycle<
+      Resource,
+      Actor,
+      Context,
+      Schemas,
+      Mutations,
+      Definition["events"]
+    >
   | ((
-      value: LifecycleDefinition<Resource, Actor, Context, Mutation, Schemas>,
-    ) => Lifecycle<Resource, Actor, Context, Mutation, Schemas>) {
+      value: LifecycleDefinition<Resource, Actor, Context, Schemas, Mutations> &
+        Definition,
+    ) => Lifecycle<
+      Resource,
+      Actor,
+      Context,
+      Schemas,
+      Mutations,
+      Definition["events"]
+    >) {
   if (definition === undefined) return (value) => defineLifecycle(value);
   if (!definition || typeof definition !== "object")
     invalid("Lifecycle definition is invalid.");
@@ -405,7 +581,7 @@ export function defineLifecycle<
       )
         invalid(`Event ${name} has duplicate guard names.`);
       if (
-        typeof event.mutate !== "function" ||
+        (event.mutate !== undefined && typeof event.mutate !== "function") ||
         (event.authorize !== undefined &&
           typeof event.authorize !== "function") ||
         (event.audit !== undefined && typeof event.audit !== "function") ||
@@ -450,9 +626,16 @@ export function defineLifecycle<
         }),
       ];
     }),
-  ) as EventMap<Resource, Actor, Context, Mutation, Schemas>;
+  ) as Definition["events"];
 
-  const lifecycle: Lifecycle<Resource, Actor, Context, Mutation, Schemas> = {
+  const lifecycle: Lifecycle<
+    Resource,
+    Actor,
+    Context,
+    Schemas,
+    Mutations,
+    Definition["events"]
+  > = {
     ...definition,
     states: Object.freeze([...definition.states]),
     events: Object.freeze(events),
@@ -460,7 +643,13 @@ export function defineLifecycle<
     ...(definition.idempotency
       ? { idempotency: Object.freeze({ ...definition.idempotency }) }
       : {}),
-    getEvent: (name) => events[name as keyof Schemas],
+    getEvent: (name) =>
+      events[name as keyof Definition["events"]] as unknown as
+        | EventMap<Resource, Actor, Context, Schemas, Mutations>[Extract<
+            keyof Schemas,
+            string
+          >]
+        | undefined,
     parseInput: (event, input) => parseSchema(event.input, input),
   };
   return Object.freeze(lifecycle);
