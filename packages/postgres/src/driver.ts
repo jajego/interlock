@@ -1,5 +1,6 @@
 import {
   InterlockError,
+  isInterlockError,
   type IdempotencyClaim,
   type IdempotencyClaimResult,
   type OutboxInsert,
@@ -53,11 +54,16 @@ export function normalizePostgresError(
   error: unknown,
   duringCommit = false,
 ): InterlockError {
-  if (error instanceof InterlockError) return error;
-  const failure = error as PgFailure;
+  if (isInterlockError(error)) return error;
+  const failure =
+    error && (typeof error === "object" || typeof error === "function")
+      ? (error as PgFailure)
+      : undefined;
   if (
     duringCommit &&
-    (!failure.code || failure.code.startsWith("08") || failure.code === "57P01")
+    (!failure?.code ||
+      failure.code.startsWith("08") ||
+      failure.code === "57P01")
   ) {
     return new InterlockError(
       "INTERLOCK_COMMIT_OUTCOME_UNKNOWN",
@@ -77,7 +83,7 @@ export function normalizePostgresError(
     "55P03": ["INTERLOCK_LOCK_TIMEOUT", "PostgreSQL lock timeout."],
     "57014": ["INTERLOCK_CANCELLED", "PostgreSQL operation cancelled."],
   };
-  const mapped = failure.code ? codes[failure.code] : undefined;
+  const mapped = failure?.code ? codes[failure.code] : undefined;
   return mapped
     ? new InterlockError(mapped[0], mapped[1], { cause: error })
     : new InterlockError(
@@ -140,7 +146,12 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
     operation: (transaction: PgTransaction) => Promise<Result>,
     options: TransactionOptions = {},
   ): Promise<Result> {
-    const client = await this.pool.connect();
+    let client: PoolClient;
+    try {
+      client = await this.pool.connect();
+    } catch (error) {
+      throw normalizePostgresError(error);
+    }
     let emittedFailure: Error | undefined;
     const captureFailure = (error: Error) => {
       emittedFailure = error;
@@ -169,8 +180,16 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
       }
       throw normalizePostgresError(error, committing);
     } finally {
-      client.release(releaseFailure ?? emittedFailure);
-      client.off("error", captureFailure);
+      try {
+        client.release(releaseFailure ?? emittedFailure);
+      } catch {
+        /* Pool cleanup must not replace the transaction outcome. */
+      }
+      try {
+        client.off("error", captureFailure);
+      } catch {
+        /* Listener cleanup must not replace the transaction outcome. */
+      }
     }
   }
 

@@ -14,9 +14,15 @@ CREATE TABLE application_documents (
 CREATE FUNCTION bump_application_version_for_document() RETURNS trigger
 LANGUAGE plpgsql AS $$
 BEGIN
-  UPDATE applications
-  SET version = version + 1
-  WHERE id = COALESCE(NEW.application_id, OLD.application_id);
+  IF TG_OP = 'UPDATE' AND NEW.application_id IS DISTINCT FROM OLD.application_id THEN
+    UPDATE applications
+    SET version = version + 1
+    WHERE id IN (OLD.application_id, NEW.application_id);
+  ELSE
+    UPDATE applications
+    SET version = version + 1
+    WHERE id = COALESCE(NEW.application_id, OLD.application_id);
+  END IF;
   RETURN COALESCE(NEW, OLD);
 END;
 $$;

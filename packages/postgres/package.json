@@ -42,8 +42,10 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@interlock/core": "workspace:^",
-    "pg": "^8.16.3"
+    "@interlock/core": "workspace:^"
+  },
+  "peerDependencies": {
+    "pg": ">=8.16.3 <9"
   },
   "scripts": {
     "build": "tsc -b"

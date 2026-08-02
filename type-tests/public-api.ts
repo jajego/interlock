@@ -1,8 +1,18 @@
 import type { createApplications } from "../examples/postgres-node/src/index.js";
 import {
+  type InputSchema,
   noInput,
   type TransitionRequestFor,
 } from "../packages/core/src/index.js";
+
+const unknownBoundarySchema: InputSchema<{ value: string }, string> = {
+  parse(input: unknown) {
+    return typeof input === "object" && input !== null && "value" in input
+      ? { success: true, value: String(input.value) }
+      : { success: false, issues: [] };
+  },
+};
+void unknownBoundarySchema;
 
 declare const applications: ReturnType<typeof createApplications>;
 const actor = {

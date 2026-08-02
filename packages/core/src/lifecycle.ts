@@ -40,31 +40,27 @@ export const noInput: InputSchema<undefined, undefined> = {
         },
 };
 
-export type SubmittedInputOf<SchemaType> = SchemaType extends {
-  parse(input: infer Submitted): unknown;
-}
-  ? Submitted
-  : SchemaType extends {
-        readonly "~standard": {
-          readonly types?: { readonly input: infer Submitted };
-        };
-      }
+export type SubmittedInputOf<SchemaType> =
+  SchemaType extends InputSchema<infer Submitted, unknown>
     ? Submitted
-    : undefined;
+    : SchemaType extends {
+          readonly "~standard": {
+            readonly types?: { readonly input: infer Submitted };
+          };
+        }
+      ? Submitted
+      : undefined;
 
-export type ParsedInputOf<SchemaType> = SchemaType extends {
-  parse(
-    input: never,
-  ): ParseResult<infer Parsed> | Promise<ParseResult<infer Parsed>>;
-}
-  ? Parsed
-  : SchemaType extends {
-        readonly "~standard": {
-          readonly types?: { readonly output: infer Parsed };
-        };
-      }
+export type ParsedInputOf<SchemaType> =
+  SchemaType extends InputSchema<unknown, infer Parsed>
     ? Parsed
-    : undefined;
+    : SchemaType extends {
+          readonly "~standard": {
+            readonly types?: { readonly output: infer Parsed };
+          };
+        }
+      ? Parsed
+      : undefined;
 
 type EventCore<Resource, Actor, Context, Mutation, Parsed> = {
   from: readonly string[];

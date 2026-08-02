@@ -17,6 +17,17 @@ access to protected columns.
 - `@interlock/conformance`: executable driver, binding, and executor atomicity
   verification suites.
 
+## Install
+
+```sh
+pnpm add @interlock/core @interlock/postgres pg
+```
+
+`@interlock/core` has no external runtime dependencies. `pg` is a peer of
+`@interlock/postgres`; applications create and own the `Pool` passed to
+`new PostgresDriver(pool)`. Apply `@interlock/postgres/migration.sql` before
+executing transitions.
+
 See [`examples/postgres-node`](examples/postgres-node) for a runnable lifecycle
 with authorization, a related-document guard, database-enforced aggregate
 versioning, conditional `UPDATE ... RETURNING`, a related write, history,
@@ -41,6 +52,11 @@ if (result.status === "committed" && !result.duplicate) {
 rechecks policy authoritatively and commits. Optimistic concurrency protects the
 primary row only; each binding documents how related facts are stabilized.
 
+The PostgreSQL example uses aggregate versioning: document changes bump the
+owning application's version, including both parents when a document is moved.
+This detects related changes before lifecycle compare-and-swap; separate domain
+constraints are still required to forbid later document changes after approval.
+
 ```ts
 const assessment = await applications.assess({
   id: "application-1",
@@ -54,6 +70,8 @@ Assessment has no idempotency key or expected version because it is not a write
 precondition. Event names and submitted inputs are derived from the lifecycle's
 schema map; unknown events and wrong input shapes fail compilation. Runtime
 boundaries still return `unknown-event` or `invalid-input` for untyped callers.
+Use `isInterlockError(error)` instead of relying on `instanceof` when package
+managers may install more than one physical copy of `@interlock/core`.
 
 ## Transaction boundary
 
@@ -96,7 +114,8 @@ TEST_DATABASE_URL=postgres://interlock:interlock@localhost:54329/interlock pnpm 
 pnpm pack:check
 ```
 
-The unpublished prototype targets Node.js 20+, TypeScript 5.9+, and PostgreSQL
-16+. Publishing also requires control of the npm `@interlock` scope. Statesman
-is important prior art; Interlock's contribution is the combined transaction
+The `0.1.0-alpha.0` release targets Node.js 20+, TypeScript 5.9+, PostgreSQL
+16+, and `pg` 8.16.3 through 8.x. Pre-1.0 APIs may change with changelog notice.
+Publishing also requires control of the npm `@interlock` scope. Statesman is
+important prior art; Interlock's contribution is the combined transaction
 protocol, not invention of persisted transitions or state guards.

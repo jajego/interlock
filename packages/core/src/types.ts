@@ -15,7 +15,11 @@ export type ParseResult<Value> =
   | { success: false; issues: readonly InputIssue[] };
 
 export interface InputSchema<Submitted, Parsed> {
-  parse(input: Submitted): ParseResult<Parsed> | Promise<ParseResult<Parsed>>;
+  readonly types?: {
+    readonly submitted: Submitted;
+    readonly parsed: Parsed;
+  };
+  parse(input: unknown): ParseResult<Parsed> | Promise<ParseResult<Parsed>>;
 }
 
 export interface StandardSchema<Submitted, Parsed> {
@@ -45,19 +49,22 @@ export interface StandardSchema<Submitted, Parsed> {
 export type Schema<Submitted, Parsed> =
   InputSchema<Submitted, Parsed> | StandardSchema<Submitted, Parsed>;
 
-export interface Denial {
-  source: "state" | "authorization" | "guard";
-  rule?: string;
+export interface InternalDenial {
   code: string;
   publicMessage?: string;
   privateMessage?: string;
   details?: JsonValue;
 }
+export interface PublicDenial {
+  source: "state" | "authorization" | "guard";
+  rule?: string;
+  code: string;
+  publicMessage?: string;
+}
 export type Decision =
-  | { allowed: true }
-  | { allowed: false; denial: Omit<Denial, "source" | "rule"> };
+  { allowed: true } | { allowed: false; denial: InternalDenial };
 export const allow = (): Decision => ({ allowed: true });
-export const deny = (denial: Omit<Denial, "source" | "rule">): Decision => ({
+export const deny = (denial: InternalDenial): Decision => ({
   allowed: false,
   denial,
 });
@@ -217,7 +224,7 @@ export type TransitionResult<Resource> =
       event: string;
       currentState: string;
       targetState?: string;
-      reasons: readonly Denial[];
+      reasons: readonly PublicDenial[];
     }
   | {
       status: "conflict";
@@ -240,7 +247,7 @@ export type AssessmentResult =
       event: string;
       currentState: string;
       targetState?: string;
-      reasons: readonly Denial[];
+      reasons: readonly PublicDenial[];
     }
   | { status: "not-found" }
   | { status: "unknown-event"; event: string }

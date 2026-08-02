@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { InterlockError, type TransactionDriver } from "@interlock/core";
+import { isInterlockError, type TransactionDriver } from "@interlock/core";
 import { failOperation, type FaultOperation } from "./faults.js";
 
 export interface ExecutorAtomicityConformance<Transaction> {
@@ -36,7 +36,7 @@ export async function verifyExecutorAtomicity<Transaction>(
     }[operation];
     await assert.rejects(
       fixture.transition(driver),
-      (error) => error instanceof InterlockError && error.code === expectedCode,
+      (error) => isInterlockError(error) && error.code === expectedCode,
     );
     assert.deepEqual(await fixture.snapshot(), {
       primaryVersion: "2",

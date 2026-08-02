@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { InterlockError } from "./errors.js";
+import { InterlockError, isInterlockError } from "./errors.js";
 import { assertJsonValue } from "./json.js";
 import type {
   EventMap,
@@ -10,8 +10,9 @@ import type {
 } from "./lifecycle.js";
 import type {
   AssessmentResult,
-  Denial,
   JsonValue,
+  OutboxInsert,
+  PublicDenial,
   ResourceBinding,
   TransactionDriver,
   TransitionRecord,
@@ -71,7 +72,7 @@ function operational(
   message: string,
   cause: unknown,
 ): InterlockError {
-  return cause instanceof InterlockError
+  return isInterlockError(cause)
     ? cause
     : new InterlockError(code, message, { cause });
 }
@@ -89,7 +90,7 @@ function serialize(value: unknown, label: string): asserts value is JsonValue {
 }
 
 function unexpected(error: unknown): InterlockError {
-  return error instanceof InterlockError
+  return isInterlockError(error)
     ? error
     : new InterlockError(
         "INTERLOCK_TRANSACTION_FAILED",
@@ -117,6 +118,15 @@ export function createInterlock<
   const ids = options.ids ?? randomUUID;
   const now = options.now ?? (() => new Date());
   const maxOutboxPayloadBytes = options.maxOutboxPayloadBytes ?? 256_000;
+  const allocateId = (label: string): string => {
+    const id = ids();
+    if (typeof id !== "string" || id.length === 0)
+      throw new InterlockError(
+        "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+        `${label} ID generator must return a non-empty string.`,
+      );
+    return id;
+  };
   type LifecycleEvent = EventMap<
     Resource,
     Actor,
@@ -180,6 +190,24 @@ export function createInterlock<
   > {
     const normalized = await normalizeEvent(request);
     if (!normalized.ok) return normalized;
+    if (
+      request.idempotency &&
+      (typeof request.idempotency.key !== "string" ||
+        request.idempotency.key.length === 0)
+    )
+      return {
+        ok: false,
+        result: {
+          status: "invalid-input",
+          issues: [
+            {
+              path: ["idempotency", "key"],
+              code: "INVALID_IDEMPOTENCY_KEY",
+              message: "Idempotency key must be a non-empty string.",
+            },
+          ],
+        },
+      };
     let expectedVersion: VersionExpectation;
     if (request.expectedVersion === "use-loaded-version")
       expectedVersion = request.expectedVersion;
@@ -233,8 +261,9 @@ export function createInterlock<
     actor: Actor,
     context: Context,
     input: unknown,
-  ): Promise<Denial | undefined> {
-    const state = binding.getState(resource);
+    state: string,
+    assertBoundary: () => void,
+  ): Promise<PublicDenial | undefined> {
     if (!event.from.includes(state))
       return { source: "state", code: "INVALID_SOURCE_STATE" };
     const args = {
@@ -244,15 +273,26 @@ export function createInterlock<
       input: input as ParsedInputOf<Schemas[keyof Schemas]>,
     };
     const authorization = await event.authorize?.(args);
+    assertBoundary();
     if (authorization && !authorization.allowed)
-      return { ...authorization.denial, source: "authorization" };
+      return {
+        source: "authorization",
+        code: authorization.denial.code,
+        ...(authorization.denial.publicMessage === undefined
+          ? {}
+          : { publicMessage: authorization.denial.publicMessage }),
+      };
     for (const guard of event.guards ?? []) {
       const decision = await guard.evaluate(args);
+      assertBoundary();
       if (!decision.allowed)
         return {
-          ...decision.denial,
           source: "guard",
           rule: guard.name,
+          code: decision.denial.code,
+          ...(decision.denial.publicMessage === undefined
+            ? {}
+            : { publicMessage: decision.denial.publicMessage }),
         };
     }
     return undefined;
@@ -274,6 +314,19 @@ export function createInterlock<
               "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
               "Binding loaded a resource with the wrong identity.",
             );
+          const currentState = binding.getState(resource);
+          const currentVersion = binding.getVersion(resource);
+          const assertBoundary = () => {
+            if (
+              binding.getId(resource) !== request.id ||
+              binding.getState(resource) !== currentState ||
+              binding.getVersion(resource) !== currentVersion
+            )
+              throw new InterlockError(
+                "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+                "Lifecycle callbacks mutated the loaded resource identity, state, or version.",
+              );
+          };
           const context = binding.contextFactory.create(transaction, {
             mode: "advisory",
             event: request.event,
@@ -284,22 +337,30 @@ export function createInterlock<
             request.actor,
             context,
             normalized.input,
+            currentState,
+            assertBoundary,
           );
           return reason
             ? {
                 status: "denied",
                 event: request.event,
-                currentState: binding.getState(resource),
+                currentState,
                 targetState: normalized.event.to,
                 reasons: [reason],
               }
             : {
                 status: "allowed",
-                currentState: binding.getState(resource),
+                currentState,
                 targetState: normalized.event.to,
               };
         },
-        binding.transactionOptions({ mode: "advisory", event: request.event }),
+        {
+          ...binding.transactionOptions({
+            mode: "advisory",
+            event: request.event,
+          }),
+          readOnly: true,
+        },
       );
     } catch (error) {
       throw unexpected(error);
@@ -346,7 +407,27 @@ export function createInterlock<
               "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
               "Binding loaded a resource with the wrong identity.",
             );
-          const loadedVersion = binding.getVersion(resource);
+          const resourceId = binding.getId(resource);
+          const fromState = binding.getState(resource);
+          const loadedVersionValue = binding.getVersion(resource);
+          const parsedLoadedVersion = parseVersionToken(loadedVersionValue);
+          if (!parsedLoadedVersion.success)
+            throw new InterlockError(
+              "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+              "Binding returned an invalid PostgreSQL BIGINT version token.",
+            );
+          const loadedVersion = parsedLoadedVersion.value;
+          const assertBoundary = () => {
+            if (
+              binding.getId(resource) !== resourceId ||
+              binding.getState(resource) !== fromState ||
+              binding.getVersion(resource) !== loadedVersionValue
+            )
+              throw new InterlockError(
+                "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+                "Lifecycle callbacks mutated the loaded resource identity, state, or version.",
+              );
+          };
           if (
             normalized.expectedVersion !== "use-loaded-version" &&
             normalized.expectedVersion !== loadedVersion
@@ -355,7 +436,7 @@ export function createInterlock<
               status: "conflict",
               expected: normalized.expectedVersion,
               actual: {
-                state: binding.getState(resource),
+                state: fromState,
                 version: loadedVersion,
               },
             });
@@ -373,18 +454,20 @@ export function createInterlock<
             request.actor,
             context,
             normalized.input,
+            fromState,
+            assertBoundary,
           );
           if (reason)
             rollback({
               status: "denied",
               event: request.event,
-              currentState: binding.getState(resource),
+              currentState: fromState,
               targetState: normalized.event.to,
               reasons: [reason],
             });
 
           const occurredAt = now();
-          const transitionId = ids();
+          const transitionId = allocateId("Transition");
           const projection = {
             resource,
             actor: request.actor,
@@ -394,8 +477,11 @@ export function createInterlock<
             clock: { occurredAt },
           };
           const mutation = normalized.event.mutate(projection);
+          assertBoundary();
           const auditData = normalized.event.audit?.(projection);
+          assertBoundary();
           const descriptors = normalized.event.outbox?.(projection) ?? [];
+          assertBoundary();
           const actorIdentity = lifecycle.history.actor?.(request.actor) ?? {};
           const metadata = lifecycle.history.metadata?.({
             request: {
@@ -408,6 +494,7 @@ export function createInterlock<
             actor: request.actor,
             resource,
           });
+          assertBoundary();
           if (auditData !== undefined) serialize(auditData, "Audit data");
           if (metadata !== undefined) serialize(metadata, "History metadata");
           if (
@@ -442,13 +529,27 @@ export function createInterlock<
               );
           }
 
+          const outboxMessages: readonly OutboxInsert[] = descriptors.map(
+            (descriptor) => ({
+              id: allocateId("Outbox message"),
+              lifecycle: lifecycle.name,
+              resourceType: lifecycle.history.resourceType,
+              resourceId,
+              transitionId,
+              topic: descriptor.topic,
+              ...(descriptor.key === undefined ? {} : { key: descriptor.key }),
+              payload: descriptor.payload,
+              createdAt: occurredAt,
+            }),
+          );
+
           const previousVersion = loadedVersion;
           const nextVersion = incrementVersion(previousVersion);
           let applied: Awaited<ReturnType<typeof binding.applyPrimary>>;
           try {
             applied = await binding.applyPrimary(transaction, {
               resource,
-              fromState: binding.getState(resource),
+              fromState,
               toState: normalized.event.to,
               expectedVersion,
               nextVersion,
@@ -468,6 +569,15 @@ export function createInterlock<
               expected: normalized.expectedVersion,
               ...(applied.actual ? { actual: applied.actual } : {}),
             });
+          if (
+            binding.getId(applied.resource) !== resourceId ||
+            binding.getState(applied.resource) !== normalized.event.to ||
+            binding.getVersion(applied.resource) !== nextVersion
+          )
+            throw new InterlockError(
+              "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+              "Binding returned an applied resource with unexpected identity, state, or version.",
+            );
           try {
             await binding.applyRelated?.(transaction, {
               previousResource: resource,
@@ -490,7 +600,7 @@ export function createInterlock<
             resourceType: lifecycle.history.resourceType,
             resourceId: request.id,
             event: request.event,
-            fromState: binding.getState(resource),
+            fromState,
             toState: normalized.event.to,
             previousVersion,
             nextVersion,
@@ -533,22 +643,7 @@ export function createInterlock<
             );
           }
           try {
-            await driver.insertOutbox(
-              transaction,
-              descriptors.map((descriptor) => ({
-                id: ids(),
-                lifecycle: lifecycle.name,
-                resourceType: lifecycle.history.resourceType,
-                resourceId: request.id,
-                transitionId,
-                topic: descriptor.topic,
-                ...(descriptor.key === undefined
-                  ? {}
-                  : { key: descriptor.key }),
-                payload: descriptor.payload,
-                createdAt: occurredAt,
-              })),
-            );
+            await driver.insertOutbox(transaction, outboxMessages);
           } catch (error) {
             throw operational(
               "INTERLOCK_OUTBOX_FAILED",

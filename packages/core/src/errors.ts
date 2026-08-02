@@ -12,9 +12,14 @@ export type InterlockErrorCode =
   | "INTERLOCK_COMMIT_OUTCOME_UNKNOWN"
   | "INTERLOCK_OUTBOX_FAILED"
   | "INTERLOCK_HISTORY_FAILED"
+  | "INTERLOCK_VERSION_EXHAUSTED"
   | "INTERLOCK_CANCELLED";
 
+const interlockErrorBrand = Symbol.for("@interlock/core/InterlockError");
+
 export class InterlockError extends Error {
+  readonly [interlockErrorBrand] = true;
+
   constructor(
     readonly code: InterlockErrorCode,
     message: string,
@@ -23,4 +28,18 @@ export class InterlockError extends Error {
     super(message, options);
     this.name = "InterlockError";
   }
+}
+
+export function isInterlockError(value: unknown): value is InterlockError {
+  if (!(value instanceof Error)) return false;
+  const candidate = value as Error & {
+    code?: unknown;
+    [interlockErrorBrand]?: unknown;
+  };
+  return (
+    candidate[interlockErrorBrand] === true ||
+    (candidate.name === "InterlockError" &&
+      typeof candidate.code === "string" &&
+      candidate.code.startsWith("INTERLOCK_"))
+  );
 }

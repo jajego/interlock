@@ -5,8 +5,21 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: npm
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          {
+            POSTGRES_USER: interlock,
+            POSTGRES_PASSWORD: interlock,
+            POSTGRES_DB: interlock,
+          }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U interlock" --health-interval 2s
+          --health-timeout 3s --health-retries 20
     env:
-      TEST_DATABASE_URL: ${{ secrets.TEST_DATABASE_URL }}
+      TEST_DATABASE_URL: postgres://interlock:interlock@localhost:5432/interlock
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

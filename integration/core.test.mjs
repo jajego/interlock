@@ -6,8 +6,9 @@ import {
   canonicalJson,
   createInterlock,
   defineLifecycle,
-  InterlockError,
+  isInterlockError,
   incrementVersion,
+  MAX_BIGINT_VERSION,
   parseVersionToken,
 } from "../packages/core/dist/index.js";
 import {
@@ -21,6 +22,15 @@ test("version tokens reject unsafe counters and increment PostgreSQL BIGINT valu
   assert.equal(parsed.success, true);
   if (parsed.success)
     assert.equal(incrementVersion(parsed.value), "9007199254740994");
+  assert.equal(
+    parseVersionToken(String(MAX_BIGINT_VERSION + 1n)).success,
+    false,
+  );
+  assert.throws(
+    () => incrementVersion(String(MAX_BIGINT_VERSION)),
+    (error) =>
+      isInterlockError(error) && error.code === "INTERLOCK_VERSION_EXHAUSTED",
+  );
 });
 
 test("canonical JSON ignores object insertion order", () => {
@@ -42,6 +52,35 @@ test("definitions reject accidental self transitions", () => {
       history: { resourceType: "item" },
       events: {
         close: { from: ["open"], to: "open", mutate: () => ({}) },
+      },
+    }),
+  );
+});
+
+test("definitions reject duplicate states and guard names", () => {
+  assert.throws(() =>
+    defineLifecycle()({
+      name: "bad",
+      states: ["a", "a"],
+      history: { resourceType: "item" },
+      events: {},
+    }),
+  );
+  assert.throws(() =>
+    defineLifecycle()({
+      name: "bad",
+      states: ["a", "b"],
+      history: { resourceType: "item" },
+      events: {
+        move: {
+          from: ["a"],
+          to: "b",
+          guards: [
+            { name: "same", evaluate: () => ({ allowed: true }) },
+            { name: "same", evaluate: () => ({ allowed: true }) },
+          ],
+          mutate: () => ({}),
+        },
       },
     }),
   );
@@ -88,7 +127,10 @@ function executorFixture(options = {}) {
   const order = [];
   let inserted;
   const driver = {
-    transaction: (operation) => operation({}),
+    transaction: (operation, transactionOptions) => {
+      options.observeTransactionOptions?.(transactionOptions);
+      return operation({});
+    },
     claimIdempotency: async (_transaction, claim) => {
       order.push("claim");
       return options.claim ?? { status: "claimed", claim };
@@ -116,20 +158,21 @@ function executorFixture(options = {}) {
       move: {
         from: ["a"],
         to: "b",
-        authorize: () => {
+        authorize: (args) => {
           order.push("authorize");
-          return { allowed: true };
+          return options.authorize?.(args) ?? { allowed: true };
         },
-        mutate: () => {
+        guards: options.guards,
+        mutate: (args) => {
           order.push("mutate");
-          return {};
+          return options.mutate?.(args) ?? {};
         },
         outbox: options.outbox,
       },
     },
   };
   const binding = {
-    transactionOptions: () => ({}),
+    transactionOptions: () => options.transactionOptions ?? {},
     loadPrimary: async () => ({
       id: options.loadedId ?? "item-1",
       state: "a",
@@ -140,14 +183,16 @@ function executorFixture(options = {}) {
     getVersion: (resource) => resource.version,
     applyPrimary: async (_transaction, args) => {
       order.push("apply");
-      return {
-        status: "applied",
-        resource: {
-          ...args.resource,
-          state: args.toState,
-          version: args.nextVersion,
-        },
-      };
+      return (
+        options.applied ?? {
+          status: "applied",
+          resource: {
+            ...args.resource,
+            state: args.toState,
+            version: args.nextVersion,
+          },
+        }
+      );
     },
     contextFactory: { create: () => ({}) },
     consistency: () => ({ strategy: "none", notes: "fixture" }),
@@ -164,7 +209,7 @@ function executorFixture(options = {}) {
       order.push("clock");
       return clocks.shift();
     },
-    ids: () => "transition-1",
+    ids: options.ids ?? (() => "transition-1"),
   });
   return { subject, order, getTransition: () => inserted };
 }
@@ -200,15 +245,132 @@ test("history projections and serialization finish before application writes", a
   assert.ok(fixture.order.indexOf("metadata") < fixture.order.indexOf("apply"));
 });
 
+test("runtime boundaries return unknown-event and invalid-input", async () => {
+  const fixture = executorFixture();
+  assert.deepEqual(
+    await fixture.subject.assess({
+      id: "item-1",
+      event: "missing",
+      actor: undefined,
+    }),
+    { status: "unknown-event", event: "missing" },
+  );
+  const invalid = await fixture.subject.transition({
+    ...transitionRequest,
+    input: {},
+  });
+  assert.equal(invalid.status, "invalid-input");
+});
+
+test("empty idempotency keys are rejected before a transaction", async () => {
+  const fixture = executorFixture();
+  const result = await fixture.subject.transition({
+    ...transitionRequest,
+    idempotency: { key: "" },
+  });
+  assert.equal(result.status, "invalid-input");
+  assert.equal(fixture.order.includes("claim"), false);
+});
+
+test("assess forces read-only transactions and strips private denial data", async () => {
+  let transactionOptions;
+  const fixture = executorFixture({
+    transactionOptions: { isolation: "serializable", readOnly: false },
+    observeTransactionOptions: (value) => {
+      transactionOptions = value;
+    },
+    guards: [
+      {
+        name: "private",
+        evaluate: () => ({
+          allowed: false,
+          denial: {
+            code: "NO",
+            publicMessage: "Not allowed",
+            privateMessage: "secret",
+            details: { secret: true },
+          },
+        }),
+      },
+    ],
+  });
+  const result = await fixture.subject.assess({
+    id: "item-1",
+    event: "move",
+    actor: undefined,
+  });
+  assert.deepEqual(transactionOptions, {
+    isolation: "serializable",
+    readOnly: true,
+  });
+  assert.deepEqual(result.reasons, [
+    {
+      source: "guard",
+      rule: "private",
+      code: "NO",
+      publicMessage: "Not allowed",
+    },
+  ]);
+});
+
+test("callbacks cannot mutate the loaded concurrency boundary", async () => {
+  const fixture = executorFixture({
+    mutate: ({ resource }) => {
+      resource.state = "b";
+      return {};
+    },
+  });
+  await assert.rejects(
+    fixture.subject.transition(transitionRequest),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+  );
+  assert.equal(fixture.order.includes("apply"), false);
+});
+
+test("outbox IDs are allocated before application writes", async () => {
+  let calls = 0;
+  const fixture = executorFixture({
+    outbox: () => [{ topic: "item.moved", payload: {} }],
+    ids: () => {
+      calls += 1;
+      if (calls === 2) throw new Error("id allocation failed");
+      return "transition-1";
+    },
+  });
+  await assert.rejects(fixture.subject.transition(transitionRequest));
+  assert.equal(fixture.order.includes("apply"), false);
+});
+
 test("a binding cannot substitute another resource identity", async () => {
   const fixture = executorFixture({ loadedId: "other" });
   await assert.rejects(
     fixture.subject.transition(transitionRequest),
     (error) =>
-      error instanceof InterlockError &&
+      isInterlockError(error) &&
       error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
   );
   assert.equal(fixture.order.includes("apply"), false);
+});
+
+test("an applied resource must match the requested identity, state, and version", async () => {
+  for (const resource of [
+    { id: "other", state: "b", version: "2" },
+    { id: "item-1", state: "a", version: "2" },
+    { id: "item-1", state: "b", version: "1" },
+  ]) {
+    const fixture = executorFixture({
+      applied: { status: "applied", resource },
+    });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+    );
+    assert.equal(fixture.order.includes("history"), false);
+  }
 });
 
 test("cyclic outbox data fails with a typed error before writes", async () => {
@@ -220,7 +382,7 @@ test("cyclic outbox data fails with a typed error before writes", async () => {
   await assert.rejects(
     fixture.subject.transition(transitionRequest),
     (error) =>
-      error instanceof InterlockError &&
+      isInterlockError(error) &&
       error.code === "INTERLOCK_SERIALIZATION_FAILED",
   );
   assert.equal(fixture.order.includes("apply"), false);
@@ -245,6 +407,14 @@ test("PostgreSQL operational codes remain distinct from domain conflicts", () =>
   );
 });
 
+test("Interlock errors are recognizable across physical package copies", () => {
+  const duplicateCopyError = Object.assign(new Error("failed"), {
+    name: "InterlockError",
+    code: "INTERLOCK_TRANSACTION_FAILED",
+  });
+  assert.equal(isInterlockError(duplicateCopyError), true);
+});
+
 test("connection loss during commit reports an unknown commit outcome", async () => {
   let releases = 0;
   const client = {
@@ -263,10 +433,50 @@ test("connection loss during commit reports an unknown commit outcome", async ()
   await assert.rejects(
     driver.transaction(async () => "done"),
     (error) =>
-      error instanceof InterlockError &&
+      isInterlockError(error) &&
       error.code === "INTERLOCK_COMMIT_OUTCOME_UNKNOWN",
   );
   assert.equal(releases, 1);
+});
+
+test("connection acquisition failures are normalized", async () => {
+  const failure = Object.assign(new Error("connection refused"), {
+    code: "ECONNREFUSED",
+  });
+  const driver = new PostgresDriver({
+    connect: async () => {
+      throw failure;
+    },
+  });
+  await assert.rejects(
+    driver.transaction(async () => "done"),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_TRANSACTION_FAILED" &&
+      error.cause === failure,
+  );
+});
+
+test("release failures do not replace transaction failures", async () => {
+  const original = new Error("operation failed");
+  const client = {
+    on: () => undefined,
+    off: () => undefined,
+    query: async () => ({ rowCount: 0, rows: [] }),
+    release: () => {
+      throw new Error("release failed");
+    },
+  };
+  const driver = new PostgresDriver({ connect: async () => client });
+  await assert.rejects(
+    driver.transaction(async () => {
+      throw original;
+    }),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_TRANSACTION_FAILED" &&
+      error.cause === original,
+  );
 });
 
 test("rollback failure does not replace the original execution failure", async () => {
@@ -287,7 +497,7 @@ test("rollback failure does not replace the original execution failure", async (
       throw original;
     }),
     (error) =>
-      error instanceof InterlockError &&
+      isInterlockError(error) &&
       error.code === "INTERLOCK_TRANSACTION_FAILED" &&
       error.cause === original,
   );

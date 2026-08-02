@@ -8,7 +8,7 @@ import {
   canonicalHash,
   createInterlock,
   defineLifecycle,
-  InterlockError,
+  isInterlockError,
   noInput,
 } from "../packages/core/dist/index.js";
 import { PostgresDriver } from "../packages/postgres/dist/index.js";
@@ -201,6 +201,27 @@ test(
     }
   },
 );
+
+test("moving a document bumps both aggregate parents", { skip }, async () => {
+  const { pool } = await fixture();
+  try {
+    await pool.query(
+      "INSERT INTO applications (id, owner_id, state) VALUES ('a2', 'owner', 'under_review')",
+    );
+    await pool.query(
+      "UPDATE application_documents SET application_id = 'a2' WHERE id = 'd1'",
+    );
+    const versions = await pool.query(
+      "SELECT id, version::text FROM applications ORDER BY id",
+    );
+    assert.deepEqual(versions.rows, [
+      { id: "a1", version: "3" },
+      { id: "a2", version: "2" },
+    ]);
+  } finally {
+    await pool.end();
+  }
+});
 
 test(
   "PostgreSQL driver satisfies the public conformance suite",
@@ -656,7 +677,7 @@ test(
           idempotency: { key: "hydrate" },
         }),
         (error) =>
-          error instanceof InterlockError &&
+          isInterlockError(error) &&
           error.code === "INTERLOCK_TRANSACTION_FAILED",
       );
       const result = await pool.query(`SELECT
@@ -708,7 +729,7 @@ test(
           idempotency: { key: "connection-drop" },
         }),
         (error) =>
-          error instanceof InterlockError &&
+          isInterlockError(error) &&
           error.code === "INTERLOCK_PERSISTENCE_FAILED",
       );
       assert.equal(

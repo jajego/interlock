@@ -8,10 +8,10 @@
     "clean": "tsc -b --clean",
     "check": "pnpm build && pnpm typecheck && node --test integration/core.test.mjs",
     "typecheck": "tsc -p tsconfig.type-tests.json --pretty false",
-    "test:postgres": "pnpm build && node --test integration/postgres.test.mjs",
+    "test:postgres": "node scripts/require-postgres.mjs && pnpm build && node --test integration/postgres.test.mjs",
     "format": "prettier --check .",
     "lint": "eslint .",
-    "pack:check": "tsc -b --clean && tsc -b && node scripts/pack-check.mjs",
+    "pack:check": "node scripts/pack-check.mjs",
     "changeset": "changeset",
     "version-packages": "changeset version",
     "release": "changeset publish"

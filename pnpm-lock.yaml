@@ -77,7 +77,7 @@ importers:
         specifier: workspace:^
         version: link:../core
       pg:
-        specifier: ^8.16.3
+        specifier: ">=8.16.3 <9"
         version: 8.22.0
 
 packages:
