@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { InterlockError, isInterlockError } from "./errors.js";
-import { assertJsonValue } from "./json.js";
+import { assertJsonValue, cloneJsonValue } from "./json.js";
 import type {
   EventMap,
   EventSchemaMap,
@@ -98,6 +98,11 @@ function serialize(value: unknown, label: string): asserts value is JsonValue {
       error,
     );
   }
+}
+
+function snapshotJson(value: unknown, label: string): JsonValue {
+  serialize(value, label);
+  return cloneJsonValue(value);
 }
 
 function unexpected(error: unknown): InterlockError {
@@ -305,6 +310,54 @@ export function createInterlock<
     event: LifecycleEvent;
     input: unknown;
   };
+  type SnapshotRequest = BoundaryRequest<Actor>;
+  type SnapshotTransitionRequest = SnapshotRequest & {
+    expectedVersion: unknown;
+    idempotency?: { key: string };
+  };
+
+  function snapshotRequest(request: BoundaryRequest<Actor>): SnapshotRequest {
+    const metadata =
+      request.metadata === undefined
+        ? undefined
+        : snapshotJson(request.metadata, "Request metadata");
+    return Object.freeze({
+      id: request.id,
+      event: request.event,
+      actor: request.actor,
+      input: request.input,
+      ...(metadata === undefined ? {} : { metadata }),
+      ...(request.correlationId === undefined
+        ? {}
+        : { correlationId: request.correlationId }),
+      ...(request.causationId === undefined
+        ? {}
+        : { causationId: request.causationId }),
+    });
+  }
+
+  function snapshotTransitionRequest(
+    request: BoundaryRequest<Actor> & {
+      expectedVersion: unknown;
+      idempotency?: unknown;
+    },
+  ): SnapshotTransitionRequest {
+    const idempotency = request.idempotency;
+    return Object.freeze({
+      ...snapshotRequest(request),
+      expectedVersion: request.expectedVersion,
+      ...(idempotency === undefined
+        ? {}
+        : {
+            idempotency: Object.freeze({
+              key:
+                record(idempotency) && typeof idempotency.key === "string"
+                  ? idempotency.key
+                  : "",
+            }),
+          }),
+    });
+  }
 
   function decision(value: unknown, label: string) {
     if (value === true || (record(value) && value.allowed === true))
@@ -375,6 +428,7 @@ export function createInterlock<
     value: unknown,
     request: { id: string; event: string; idempotency: { key: string } },
     fingerprint: string,
+    event: LifecycleEvent,
   ): TransitionRecord {
     if (!record(value))
       throw new InterlockError(
@@ -393,6 +447,8 @@ export function createInterlock<
       !nonempty(value.id) ||
       !nonempty(value.fromState) ||
       !nonempty(value.toState) ||
+      !event.from.includes(value.fromState) ||
+      value.toState !== event.to ||
       !previous.success ||
       !next.success ||
       BigInt(next.value) !== BigInt(previous.value) + 1n ||
@@ -403,7 +459,62 @@ export function createInterlock<
         "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
         "Driver returned an unrelated or malformed duplicate transition.",
       );
-    return value as unknown as TransitionRecord;
+    for (const field of [
+      "actorType",
+      "actorId",
+      "correlationId",
+      "causationId",
+      "definitionVersion",
+    ] as const)
+      if (value[field] !== undefined && typeof value[field] !== "string")
+        throw new InterlockError(
+          "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+          `Driver returned an invalid duplicate ${field}.`,
+        );
+    let auditData: JsonValue | undefined;
+    let metadata: JsonValue | undefined;
+    try {
+      if (value.auditData !== undefined) {
+        assertJsonValue(value.auditData);
+        auditData = cloneJsonValue(value.auditData);
+      }
+      if (value.metadata !== undefined) {
+        assertJsonValue(value.metadata);
+        metadata = cloneJsonValue(value.metadata);
+      }
+    } catch (cause) {
+      throw new InterlockError(
+        "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+        "Driver returned invalid duplicate JSON data.",
+        { cause },
+      );
+    }
+    const actorType = value.actorType as string | undefined;
+    const actorId = value.actorId as string | undefined;
+    const correlationId = value.correlationId as string | undefined;
+    const causationId = value.causationId as string | undefined;
+    const definitionVersion = value.definitionVersion as string | undefined;
+    return {
+      id: value.id,
+      lifecycle: value.lifecycle,
+      resourceType: value.resourceType,
+      resourceId: value.resourceId,
+      event: value.event,
+      fromState: value.fromState,
+      toState: value.toState,
+      previousVersion: previous.value,
+      nextVersion: next.value,
+      occurredAt: new Date(value.occurredAt.getTime()),
+      ...(actorType === undefined ? {} : { actorType }),
+      ...(actorId === undefined ? {} : { actorId }),
+      ...(auditData === undefined ? {} : { auditData }),
+      ...(metadata === undefined ? {} : { metadata }),
+      ...(correlationId === undefined ? {} : { correlationId }),
+      ...(causationId === undefined ? {} : { causationId }),
+      idempotencyKey: value.idempotencyKey,
+      requestFingerprint: value.requestFingerprint,
+      ...(definitionVersion === undefined ? {} : { definitionVersion }),
+    };
   }
 
   function idempotencyResult(value: unknown) {
@@ -469,10 +580,7 @@ export function createInterlock<
   }
 
   async function normalizeTransition(
-    request: BoundaryRequest<Actor> & {
-      expectedVersion: unknown;
-      idempotency?: { key: string };
-    },
+    request: SnapshotTransitionRequest,
   ): Promise<
     | NormalizationFailure
     | (NormalizedEvent & {
@@ -613,18 +721,18 @@ export function createInterlock<
   async function assess(
     request: AssessmentRequestFor<Schemas, Actor>,
   ): Promise<AssessmentResult> {
-    const boundary = request as BoundaryRequest<Actor>;
-    const normalized = await normalizeEvent(boundary);
+    const command = snapshotRequest(request as BoundaryRequest<Actor>);
+    const normalized = await normalizeEvent(command);
     if (!normalized.ok) return normalized.result;
     const advisoryOptions = {
-      ...resolveTransactionOptions("advisory", request.event),
+      ...resolveTransactionOptions("advisory", command.event),
       readOnly: true,
     };
     try {
       return await driver.transaction(async (transaction) => {
         let resource;
         try {
-          resource = await binding.loadPrimary(transaction, request.id);
+          resource = await binding.loadPrimary(transaction, command.id);
         } catch (error) {
           throw operational(
             "INTERLOCK_PERSISTENCE_FAILED",
@@ -634,7 +742,7 @@ export function createInterlock<
         }
         if (!resource) return { status: "not-found" };
         const loaded = resourceSnapshot(resource, "Loaded resource");
-        if (loaded.id !== request.id)
+        if (loaded.id !== command.id)
           throw new InterlockError(
             "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
             "Binding loaded a resource with the wrong identity.",
@@ -644,7 +752,7 @@ export function createInterlock<
         const assertBoundary = () => {
           const current = resourceSnapshot(resource, "Loaded resource");
           if (
-            current.id !== request.id ||
+            current.id !== command.id ||
             current.state !== currentState ||
             current.version !== currentVersion
           )
@@ -657,7 +765,7 @@ export function createInterlock<
         try {
           context = binding.contextFactory.create(transaction, {
             mode: "advisory",
-            event: request.event,
+            event: command.event,
           });
         } catch (error) {
           throw operational(
@@ -669,7 +777,7 @@ export function createInterlock<
         const reason = await evaluate(
           normalized.event,
           resource,
-          request.actor,
+          command.actor,
           context,
           normalized.input,
           currentState,
@@ -678,7 +786,7 @@ export function createInterlock<
         return reason
           ? {
               status: "denied",
-              event: request.event,
+              event: command.event,
               currentState,
               targetState: normalized.event.to,
               reasons: [reason],
@@ -697,18 +805,20 @@ export function createInterlock<
   async function transition(
     request: TransitionRequestFor<Schemas, Actor>,
   ): Promise<TransitionResult<Resource>> {
-    const boundary = request as BoundaryRequest<Actor> & {
-      expectedVersion: unknown;
-      idempotency?: { key: string };
-    };
-    const normalized = await normalizeTransition(boundary);
+    const command = snapshotTransitionRequest(
+      request as BoundaryRequest<Actor> & {
+        expectedVersion: unknown;
+        idempotency?: unknown;
+      },
+    );
+    const normalized = await normalizeTransition(command);
     if (!normalized.ok) return normalized.result;
     const authoritativeOptions = resolveTransactionOptions(
       "authoritative",
-      request.event,
+      command.event,
     );
     if (
-      request.idempotency &&
+      command.idempotency &&
       (authoritativeOptions.isolation ?? "read-committed") !== "read-committed"
     )
       throw new InterlockError(
@@ -717,7 +827,7 @@ export function createInterlock<
       );
     try {
       return await driver.transaction(async (transaction) => {
-        if (request.idempotency) {
+        if (command.idempotency) {
           let claim;
           const createdAt = timestamp("Idempotency claim");
           const createdTime = createdAt.getTime();
@@ -725,8 +835,8 @@ export function createInterlock<
             claim = idempotencyResult(
               await driver.claimIdempotency(transaction, {
                 lifecycle: lifecycle.name,
-                resourceId: request.id,
-                key: request.idempotency.key,
+                resourceId: command.id,
+                key: command.idempotency.key,
                 fingerprint: normalized.fingerprint as string,
                 createdAt,
               }),
@@ -746,7 +856,7 @@ export function createInterlock<
           if (claim.status === "conflict")
             return {
               status: "idempotency-conflict",
-              key: request.idempotency.key,
+              key: command.idempotency.key,
             };
           if (claim.status === "duplicate")
             return {
@@ -755,18 +865,19 @@ export function createInterlock<
               transition: duplicateTransition(
                 claim.transition,
                 {
-                  id: request.id,
-                  event: request.event,
-                  idempotency: request.idempotency,
+                  id: command.id,
+                  event: command.event,
+                  idempotency: command.idempotency,
                 },
                 normalized.fingerprint as string,
+                normalized.event,
               ),
             };
         }
 
         let resource;
         try {
-          resource = await binding.loadPrimary(transaction, request.id);
+          resource = await binding.loadPrimary(transaction, command.id);
         } catch (error) {
           throw operational(
             "INTERLOCK_PERSISTENCE_FAILED",
@@ -776,7 +887,7 @@ export function createInterlock<
         }
         if (!resource) rollback({ status: "not-found" });
         const loaded = resourceSnapshot(resource, "Loaded resource");
-        if (loaded.id !== request.id)
+        if (loaded.id !== command.id)
           throw new InterlockError(
             "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
             "Binding loaded a resource with the wrong identity.",
@@ -816,7 +927,7 @@ export function createInterlock<
         try {
           context = binding.contextFactory.create(transaction, {
             mode: "authoritative",
-            event: request.event,
+            event: command.event,
           });
         } catch (error) {
           throw operational(
@@ -828,7 +939,7 @@ export function createInterlock<
         const reason = await evaluate(
           normalized.event,
           resource,
-          request.actor,
+          command.actor,
           context,
           normalized.input,
           fromState,
@@ -837,7 +948,7 @@ export function createInterlock<
         if (reason)
           rollback({
             status: "denied",
-            event: request.event,
+            event: command.event,
             currentState: fromState,
             targetState: normalized.event.to,
             reasons: [reason],
@@ -855,7 +966,7 @@ export function createInterlock<
         const transitionId = allocateId("Transition");
         const projection = {
           resource,
-          actor: request.actor,
+          actor: command.actor,
           context,
           input: normalized.input as ParsedInputOf<Schemas[keyof Schemas]>,
           transitionId,
@@ -885,6 +996,8 @@ export function createInterlock<
         }
         assertBoundary();
         assertClock();
+        if (auditData !== undefined)
+          auditData = snapshotJson(auditData, "Audit data");
         let descriptors;
         try {
           descriptors = normalized.event.outbox?.(projection) ?? [];
@@ -904,7 +1017,7 @@ export function createInterlock<
         assertClock();
         let actorIdentity;
         try {
-          actorIdentity = lifecycle.history.actor?.(request.actor) ?? {};
+          actorIdentity = lifecycle.history.actor?.(command.actor) ?? {};
         } catch (error) {
           throw operational(
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
@@ -922,13 +1035,13 @@ export function createInterlock<
         try {
           metadata = lifecycle.history.metadata?.({
             request: {
-              resourceId: request.id,
-              event: request.event,
-              ...(request.metadata === undefined
+              resourceId: command.id,
+              event: command.event,
+              ...(command.metadata === undefined
                 ? {}
-                : { metadata: request.metadata }),
+                : { metadata: command.metadata }),
             },
-            actor: request.actor,
+            actor: command.actor,
             resource,
           });
         } catch (error) {
@@ -940,8 +1053,8 @@ export function createInterlock<
         }
         assertBoundary();
         assertClock();
-        if (auditData !== undefined) serialize(auditData, "Audit data");
-        if (metadata !== undefined) serialize(metadata, "History metadata");
+        if (metadata !== undefined)
+          metadata = snapshotJson(metadata, "History metadata");
         if (
           (actorIdentity.actorType !== undefined &&
             typeof actorIdentity.actorType !== "string") ||
@@ -952,7 +1065,9 @@ export function createInterlock<
             "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
             "History actor projection must return string identity fields.",
           );
-        for (const descriptor of descriptors) {
+        const actorType = actorIdentity.actorType as string | undefined;
+        const actorId = actorIdentity.actorId as string | undefined;
+        const plannedDescriptors = descriptors.map((descriptor) => {
           if (
             !record(descriptor) ||
             typeof descriptor.topic !== "string" ||
@@ -963,18 +1078,22 @@ export function createInterlock<
               "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
               "Outbox descriptors require a topic and optional string key.",
             );
-          serialize(descriptor.payload, "Outbox payload");
+          const payload = snapshotJson(descriptor.payload, "Outbox payload");
           if (
-            Buffer.byteLength(JSON.stringify(descriptor.payload)) >
-            maxOutboxPayloadBytes
+            Buffer.byteLength(JSON.stringify(payload)) > maxOutboxPayloadBytes
           )
             throw new InterlockError(
               "INTERLOCK_SERIALIZATION_FAILED",
               "Outbox payload exceeds the configured limit.",
             );
-        }
+          return {
+            topic: descriptor.topic,
+            ...(descriptor.key === undefined ? {} : { key: descriptor.key }),
+            payload,
+          };
+        });
 
-        const outboxMessages: readonly OutboxInsert[] = descriptors.map(
+        const outboxMessages: readonly OutboxInsert[] = plannedDescriptors.map(
           (descriptor) => ({
             id: allocateId("Outbox message"),
             lifecycle: lifecycle.name,
@@ -991,6 +1110,37 @@ export function createInterlock<
         const previousVersion = loadedVersion;
         const nextVersion = incrementVersion(previousVersion);
         assertClock();
+        const transitionValue: TransitionRecord = {
+          id: transitionId,
+          lifecycle: lifecycle.name,
+          resourceType: lifecycle.history.resourceType,
+          resourceId: command.id,
+          event: command.event,
+          fromState,
+          toState: normalized.event.to,
+          previousVersion,
+          nextVersion,
+          occurredAt: new Date(occurredTime),
+          ...(actorType === undefined ? {} : { actorType }),
+          ...(actorId === undefined ? {} : { actorId }),
+          ...(auditData === undefined ? {} : { auditData }),
+          ...(metadata === undefined ? {} : { metadata }),
+          ...(command.correlationId === undefined
+            ? {}
+            : { correlationId: command.correlationId }),
+          ...(command.causationId === undefined
+            ? {}
+            : { causationId: command.causationId }),
+          ...(command.idempotency
+            ? {
+                idempotencyKey: command.idempotency.key,
+                requestFingerprint: normalized.fingerprint as string,
+              }
+            : {}),
+          ...(lifecycle.definitionVersion === undefined
+            ? {}
+            : { definitionVersion: lifecycle.definitionVersion }),
+        };
         let applied: Awaited<ReturnType<typeof binding.applyPrimary>>;
         try {
           applied = await binding.applyPrimary(transaction, {
@@ -1063,41 +1213,6 @@ export function createInterlock<
           );
         }
 
-        const transitionValue: TransitionRecord = {
-          id: transitionId,
-          lifecycle: lifecycle.name,
-          resourceType: lifecycle.history.resourceType,
-          resourceId: request.id,
-          event: request.event,
-          fromState,
-          toState: normalized.event.to,
-          previousVersion,
-          nextVersion,
-          occurredAt: new Date(occurredTime),
-          ...(actorIdentity.actorType === undefined
-            ? {}
-            : { actorType: actorIdentity.actorType }),
-          ...(actorIdentity.actorId === undefined
-            ? {}
-            : { actorId: actorIdentity.actorId }),
-          ...(auditData === undefined ? {} : { auditData }),
-          ...(metadata === undefined ? {} : { metadata }),
-          ...(request.correlationId === undefined
-            ? {}
-            : { correlationId: request.correlationId }),
-          ...(request.causationId === undefined
-            ? {}
-            : { causationId: request.causationId }),
-          ...(request.idempotency
-            ? {
-                idempotencyKey: request.idempotency.key,
-                requestFingerprint: normalized.fingerprint as string,
-              }
-            : {}),
-          ...(lifecycle.definitionVersion === undefined
-            ? {}
-            : { definitionVersion: lifecycle.definitionVersion }),
-        };
         try {
           await driver.insertTransition(transaction, {
             ...transitionValue,
@@ -1119,12 +1234,12 @@ export function createInterlock<
             error,
           );
         }
-        if (request.idempotency) {
+        if (command.idempotency) {
           try {
             await driver.completeIdempotency(transaction, {
               lifecycle: lifecycle.name,
-              resourceId: request.id,
-              key: request.idempotency.key,
+              resourceId: command.id,
+              key: command.idempotency.key,
               transitionId,
               completedAt: new Date(occurredTime),
             });
