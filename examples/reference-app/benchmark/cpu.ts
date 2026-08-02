@@ -95,18 +95,20 @@ const reports = [];
 for (const [name, guards, outbox, bytes, idempotent] of scenarios) {
   const subject = client({ guards, outbox, bytes });
   reports.push(
-    await measure(name, async (iteration) => {
-      const result = await subject.transition({
-        id: "resource",
-        event: "move",
-        actor: undefined,
-        expectedVersion: "1",
-        ...(idempotent
-          ? { idempotency: { key: `${name}-${iteration}-${Math.random()}` } }
-          : {}),
-      });
-      if (result.status !== "committed") throw new Error(result.status);
-    }),
+    await measure(name, async (iteration) => ({
+      run: async () => {
+        const result = await subject.transition({
+          id: "resource",
+          event: "move",
+          actor: undefined,
+          expectedVersion: "1",
+          ...(idempotent
+            ? { idempotency: { key: `${name}-${iteration}` } }
+            : {}),
+        });
+        if (result.status !== "committed") throw new Error(result.status);
+      },
+    })),
   );
 }
 const duplicate = client({ guards: 0, outbox: 1, bytes: 0 });
@@ -119,11 +121,13 @@ const duplicateRequest = {
 };
 await duplicate.transition(duplicateRequest);
 reports.push(
-  await measure("duplicate-replay", async () => {
-    const result = await duplicate.transition(duplicateRequest);
-    if (result.status !== "committed" || !result.duplicate)
-      throw new Error(result.status);
-  }),
+  await measure("duplicate-replay", async () => ({
+    run: async () => {
+      const result = await duplicate.transition(duplicateRequest);
+      if (result.status !== "committed" || !result.duplicate)
+        throw new Error(result.status);
+    },
+  })),
 );
 process.stdout.write(
   `${JSON.stringify({ layer: "orchestration-cpu", environment: environment(), reports }, null, 2)}\n`,

@@ -15,6 +15,7 @@ try {
   for (const [id, name] of [
     ["applicant-a", "Avery Applicant"],
     ["reviewer-a", "Riley Reviewer"],
+    ["reviewer-b", "Robin Reviewer"],
     ["admin-a", "Alex Admin"],
     ["applicant-b", "Blake Applicant"],
   ] as const)
@@ -26,13 +27,14 @@ try {
   for (const [tenantId, userId, role] of [
     ["tenant-a", "applicant-a", "applicant"],
     ["tenant-a", "reviewer-a", "reviewer"],
+    ["tenant-a", "reviewer-b", "reviewer"],
     ["tenant-a", "admin-a", "admin"],
     ["tenant-b", "applicant-b", "applicant"],
   ] as const)
     await database.tenantMembership.upsert({
       where: { tenantId_userId: { tenantId, userId } },
-      update: { role },
-      create: { tenantId, userId, role },
+      update: { role, active: true },
+      create: { tenantId, userId, role, active: true },
     });
 } finally {
   await database.$disconnect();

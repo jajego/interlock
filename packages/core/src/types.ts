@@ -25,12 +25,20 @@ export interface InputSchema<Submitted, Parsed> {
 export interface StandardSchema<Submitted, Parsed> {
   readonly "~standard": {
     readonly version: 1;
-    readonly validate: (input: unknown) =>
+    readonly vendor?: string | undefined;
+    readonly validate: (
+      input: unknown,
+      options?: {
+        readonly libraryOptions?: Record<string, unknown> | undefined;
+      },
+    ) =>
       | { readonly value: Parsed; readonly issues?: undefined }
       | {
           readonly issues: readonly {
             message: string;
-            path?: ReadonlyArray<PropertyKey | { key: PropertyKey }>;
+            path?:
+              | ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>
+              | undefined;
           }[];
         }
       | Promise<
@@ -38,11 +46,14 @@ export interface StandardSchema<Submitted, Parsed> {
           | {
               readonly issues: readonly {
                 message: string;
-                path?: ReadonlyArray<PropertyKey | { key: PropertyKey }>;
+                path?:
+                  | ReadonlyArray<PropertyKey | { readonly key: PropertyKey }>
+                  | undefined;
               }[];
             }
         >;
-    readonly types?: { readonly input: Submitted; readonly output: Parsed };
+    readonly types?:
+      { readonly input: Submitted; readonly output: Parsed } | undefined;
   };
 }
 

@@ -9,8 +9,21 @@ import {
   type TransitionRecord,
   type VersionToken,
 } from "@interlock/core";
+import { normalizePostgresError } from "@interlock/postgres";
 import { Prisma, type PrismaClient } from "@prisma/client";
-import type { Transaction } from "../db.js";
+import type {
+  StatementObserver,
+  Transaction,
+  TransactionTiming,
+} from "../db.js";
+
+const OUTBOX_BATCH_SIZE = 500;
+const ignoreStatement: StatementObserver = () => {};
+
+export interface PrismaInterlockDriverOptions {
+  observeStatement?: StatementObserver;
+  observeTransaction?(timing: TransactionTiming): void;
+}
 
 interface TransitionRow {
   id: string;
@@ -80,10 +93,64 @@ function transition(row: TransitionRow): TransitionRecord {
   };
 }
 
-export class PrismaInterlockDriver implements TransactionDriver<Transaction> {
-  constructor(private readonly prisma: PrismaClient) {}
+function property(value: unknown, key: PropertyKey): unknown {
+  if (value === null || typeof value !== "object") return undefined;
+  try {
+    return Reflect.get(value, key);
+  } catch {
+    return undefined;
+  }
+}
 
-  transaction<Result>(
+function prismaSqlState(error: unknown): string | undefined {
+  const seen = new Set<unknown>();
+  let current = error;
+  while (current && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    const code = property(current, "code");
+    if (code === "P2034") return "40001";
+    const metaCode = property(property(current, "meta"), "code");
+    if (typeof metaCode === "string") return metaCode;
+    const message = property(current, "message");
+    if (typeof message === "string") {
+      const match = /Code: `([0-9A-Z]{5})`/.exec(message);
+      if (match?.[1]) return match[1];
+    }
+    current = property(current, "cause");
+  }
+  return undefined;
+}
+
+function normalizePrismaError(error: unknown, duringCommit: boolean) {
+  const code = prismaSqlState(error);
+  const promotable =
+    code !== undefined &&
+    (["40001", "40P01", "55P03", "57014", "57P01"].includes(code) ||
+      code.startsWith("08"));
+  return normalizePostgresError(
+    promotable
+      ? Object.assign(
+          new Error("Prisma PostgreSQL failure.", { cause: error }),
+          {
+            code,
+          },
+        )
+      : error,
+    duringCommit,
+  );
+}
+
+export class PrismaInterlockDriver implements TransactionDriver<Transaction> {
+  private readonly observeStatement: StatementObserver;
+
+  constructor(
+    private readonly prisma: PrismaClient,
+    private readonly options: PrismaInterlockDriverOptions = {},
+  ) {
+    this.observeStatement = options.observeStatement ?? ignoreStatement;
+  }
+
+  async transaction<Result>(
     operation: (transaction: Transaction) => Promise<Result>,
     options: TransactionOptions = {},
   ): Promise<Result> {
@@ -92,20 +159,48 @@ export class PrismaInterlockDriver implements TransactionDriver<Transaction> {
       "repeatable-read": Prisma.TransactionIsolationLevel.RepeatableRead,
       serializable: Prisma.TransactionIsolationLevel.Serializable,
     } as const;
-    return this.prisma.$transaction(
-      async (transaction) => {
-        if (options.readOnly)
-          await transaction.$executeRawUnsafe("SET TRANSACTION READ ONLY");
-        return operation(transaction);
-      },
-      { isolationLevel: levels[options.isolation ?? "read-committed"] },
-    );
+    const started = process.hrtime.bigint();
+    let entered: bigint | undefined;
+    let finished: bigint | undefined;
+    let operationCompleted = false;
+    try {
+      return await this.prisma.$transaction(
+        async (transaction) => {
+          entered = process.hrtime.bigint();
+          try {
+            if (options.readOnly) {
+              this.observeStatement("transaction-read-only");
+              await transaction.$executeRawUnsafe("SET TRANSACTION READ ONLY");
+            }
+            const result = await operation(transaction);
+            operationCompleted = true;
+            return result;
+          } finally {
+            finished = process.hrtime.bigint();
+          }
+        },
+        { isolationLevel: levels[options.isolation ?? "read-committed"] },
+      );
+    } catch (error) {
+      if (!(error instanceof Error)) throw error;
+      throw normalizePrismaError(error, operationCompleted);
+    } finally {
+      const ended = process.hrtime.bigint();
+      const enteredAt = entered ?? ended;
+      const finishedAt = finished ?? ended;
+      this.options.observeTransaction?.({
+        poolWaitMs: Number(enteredAt - started) / 1_000_000,
+        transactionMs: Number(finishedAt - enteredAt) / 1_000_000,
+        totalMs: Number(ended - started) / 1_000_000,
+      });
+    }
   }
 
   async claimIdempotency(
     transaction: Transaction,
     claim: IdempotencyClaim,
   ): Promise<IdempotencyClaimResult> {
+    this.observeStatement("idempotency-claim");
     const inserted = await transaction.$executeRaw`
       INSERT INTO interlock.interlock_idempotency
         (lifecycle, resource_id, idempotency_key, fingerprint, created_at)
@@ -113,6 +208,7 @@ export class PrismaInterlockDriver implements TransactionDriver<Transaction> {
       ON CONFLICT DO NOTHING
     `;
     if (inserted === 1) return { status: "claimed" };
+    this.observeStatement("idempotency-duplicate-load");
     const rows = await transaction.$queryRaw<
       Array<TransitionRow & { fingerprint: string }>
     >`
@@ -144,6 +240,7 @@ export class PrismaInterlockDriver implements TransactionDriver<Transaction> {
       completedAt: Date;
     },
   ) {
+    this.observeStatement("idempotency-complete");
     const count = await transaction.$executeRaw`
       UPDATE interlock.interlock_idempotency
       SET transition_id = ${completion.transitionId}, completed_at = ${completion.completedAt}
@@ -160,22 +257,45 @@ export class PrismaInterlockDriver implements TransactionDriver<Transaction> {
   }
 
   async insertTransition(transaction: Transaction, value: TransitionRecord) {
-    await transaction.$executeRaw`
+    this.observeStatement("history-insert");
+    const count = await transaction.$executeRaw`
       INSERT INTO interlock.interlock_transition_history
         (id,lifecycle,resource_type,resource_id,event,from_state,to_state,previous_version,next_version,actor_type,actor_id,audit_data,metadata,correlation_id,causation_id,idempotency_key,request_fingerprint,definition_version,occurred_at)
       VALUES (${value.id},${value.lifecycle},${value.resourceType},${value.resourceId},${value.event},${value.fromState},${value.toState},${value.previousVersion}::bigint,${value.nextVersion}::bigint,${value.actorType ?? null},${value.actorId ?? null},${value.auditData === undefined ? null : JSON.stringify(value.auditData)}::jsonb,${value.metadata === undefined ? null : JSON.stringify(value.metadata)}::jsonb,${value.correlationId ?? null},${value.causationId ?? null},${value.idempotencyKey ?? null},${value.requestFingerprint ?? null},${value.definitionVersion ?? null},${value.occurredAt})
     `;
+    if (count !== 1)
+      throw new InterlockError(
+        "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+        "Prisma history insertion affected an unexpected row count.",
+      );
   }
 
   async insertOutbox(
     transaction: Transaction,
     messages: readonly OutboxInsert[],
   ) {
-    for (const message of messages)
-      await transaction.$executeRaw`
+    for (
+      let offset = 0;
+      offset < messages.length;
+      offset += OUTBOX_BATCH_SIZE
+    ) {
+      const batch = messages.slice(offset, offset + OUTBOX_BATCH_SIZE);
+      const rows = batch.map(
+        (message) => Prisma.sql`
+          (${message.id},${message.lifecycle},${message.resourceType},${message.resourceId},${message.transitionId},${message.topic},${message.key ?? null},${JSON.stringify(message.payload)}::jsonb,${message.createdAt})
+        `,
+      );
+      this.observeStatement("outbox-insert");
+      const count = await transaction.$executeRaw`
         INSERT INTO interlock.interlock_outbox
           (id,lifecycle,resource_type,resource_id,transition_id,topic,message_key,payload,created_at)
-        VALUES (${message.id},${message.lifecycle},${message.resourceType},${message.resourceId},${message.transitionId},${message.topic},${message.key ?? null},${JSON.stringify(message.payload)}::jsonb,${message.createdAt})
+        VALUES ${Prisma.join(rows)}
       `;
+      if (count !== batch.length)
+        throw new InterlockError(
+          "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+          "Prisma outbox insertion affected an unexpected row count.",
+        );
+    }
   }
 }

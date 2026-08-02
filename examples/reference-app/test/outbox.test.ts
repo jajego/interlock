@@ -42,7 +42,7 @@ test("commits create one outbox row and duplicate retries create no more", async
   assert.equal((await counts(database, id)).outbox, 1);
 });
 
-test("two workers cannot deliver the same row", async () => {
+test("the worker holds the row lock during delivery and excludes another worker", async () => {
   await approvedPermit();
   let release!: () => void;
   let entered!: () => void;
@@ -69,5 +69,21 @@ test("worker failure rolls back delivery and leaves the row retryable", async ()
   );
   assert.equal(await database.deliveredNotification.count(), 0);
   assert.ok(await processOne(database, "worker-b"));
+  assert.equal(await database.deliveredNotification.count(), 1);
+});
+
+test("external success before acknowledgement failure demonstrates at-least-once delivery", async () => {
+  await approvedPermit();
+  let externalDeliveries = 0;
+  await assert.rejects(
+    processOne(database, "worker-a", async () => {
+      externalDeliveries += 1;
+      throw new Error("database acknowledgement was not reached");
+    }),
+  );
+  await processOne(database, "worker-b", async () => {
+    externalDeliveries += 1;
+  });
+  assert.equal(externalDeliveries, 2);
   assert.equal(await database.deliveredNotification.count(), 1);
 });

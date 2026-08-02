@@ -1,9 +1,11 @@
 # Interlock reference app
 
-A deliberately small permit-approval backend showing Interlock in a Fastify,
-Prisma, PostgreSQL 16 application. It demonstrates multitenant authentication,
-typed lifecycle commands, optimistic concurrency, idempotency, history, related
-writes, transactional outbox insertion, and a safe local outbox worker.
+A committed production-style permit-approval backend showing Interlock in a
+Fastify, Prisma, PostgreSQL 16 application. It demonstrates multitenant
+authentication, typed lifecycle commands, optimistic concurrency, idempotency,
+history, related writes, transactional outbox insertion, and a deliberately
+limited local outbox worker. It is an external-consumer and DX evaluation, not a
+production starter kit or published Prisma adapter.
 
 ```mermaid
 flowchart LR
@@ -92,11 +94,39 @@ manual environment, drop the database or run migrations against a fresh one.
 - `workers/outbox.ts` is application delivery policy. It provides at-least-once
   attempts, not exactly-once external delivery.
 
+The HTTP membership lookup is an authentication precheck only. Every transition
+re-reads and row-locks the active tenant membership inside the Prisma
+transaction. Submission loads only its document count; document writes bump the
+permit aggregate version. Approval and rejection lock the current assignment.
+Beginning review locks the selected candidate's active membership and requires a
+reviewer or admin role. Other events do not pay for those unrelated reads. The
+previous decorative transaction-local tenant/user settings were removed because
+the schema has no RLS policy consuming them.
+
+Operational failures return a stable Interlock code, generic message, and
+request ID. Full errors and cause chains are written only to structured server
+logs. Expected denials retain public details while private denial fields remain
+hidden.
+
 Prisma needs a custom driver because Interlock must use the same interactive
 transaction handle for application and artifact writes. Runtime code never opens
 an independent `pg` transaction; `pg` is used only by migration setup. This app
 deliberately omits a frontend, real identity provider, broker, deployment
 configuration, automatic retries, and a reusable Prisma adapter.
+
+The copyable driver batches outbox rows in parameterized groups of 500, verifies
+history/outbox affected-row counts, and normalizes PostgreSQL serialization,
+deadlock, lock-timeout, cancellation, and unknown-commit failures through the
+public PostgreSQL normalizer. Prisma-specific unique errors remain generic
+transaction failures; this example does not claim complete error parity with the
+first-party `pg` driver.
+
+The worker intentionally holds `FOR UPDATE SKIP LOCKED` and the database
+transaction open while `deliver()` runs. Slow network delivery therefore
+lengthens the transaction. External delivery may succeed before the database
+acknowledgement fails, so delivery is at-least-once. Production dispatchers
+commonly use a lease/claim design; this compact worker demonstrates exclusion
+and retryability, not distributed delivery architecture.
 
 See [DX findings](docs/dx-findings.md) and
 [benchmark methodology](docs/benchmark-methodology.md).

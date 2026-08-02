@@ -41,3 +41,8 @@ read-only. Node.js 22.14 or newer is supported.
 See the [repository README](https://github.com/jajego/interlock#readme) for the
 complete transaction protocol, runnable PostgreSQL example, guarantees, and
 limitations.
+
+The repository also includes a committed
+[Fastify + Prisma reference application](../../examples/reference-app/README.md)
+that evaluates Interlock as an external consumer. It is not a starter kit or a
+published Prisma adapter.

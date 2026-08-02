@@ -50,7 +50,7 @@ export type SubmittedInputOf<SchemaType> =
     ? Submitted
     : SchemaType extends {
           readonly "~standard": {
-            readonly types?: { readonly input: infer Submitted };
+            readonly types?: { readonly input: infer Submitted } | undefined;
           };
         }
       ? Submitted
@@ -61,7 +61,7 @@ export type ParsedInputOf<SchemaType> =
     ? Parsed
     : SchemaType extends {
           readonly "~standard": {
-            readonly types?: { readonly output: infer Parsed };
+            readonly types?: { readonly output: infer Parsed } | undefined;
           };
         }
       ? Parsed

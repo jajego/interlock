@@ -33,3 +33,8 @@ await verifyTransactionDriver({
 Use the binding and executor verifiers the same way: provide real setup,
 operations, and observable snapshots. The package uses Node built-ins and
 `@interlock/core`; no test framework is required. Node.js 22.14+ is supported.
+
+The committed
+[Fastify + Prisma reference application](../../examples/reference-app/README.md)
+uses real PostgreSQL failure and concurrency tests as an external-consumer
+evaluation; it is not a production starter kit.

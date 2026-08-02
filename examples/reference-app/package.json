@@ -21,7 +21,8 @@
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "fastify": "^5.11.0",
-    "pg": "^8.22.0"
+    "pg": "^8.22.0",
+    "valibot": "^1.4.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

@@ -1,3 +1,4 @@
+import { InterlockError } from "@interlock/core";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "../config.js";
@@ -35,10 +36,15 @@ export async function processOne(
         workerId,
       },
     });
-    await transaction.$executeRaw`
+    const updated = await transaction.$executeRaw`
       UPDATE interlock.interlock_outbox SET published_at = now()
       WHERE id = ${message.id} AND published_at IS NULL
     `;
+    if (updated !== 1)
+      throw new InterlockError(
+        "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+        "Outbox acknowledgement affected an unexpected row count.",
+      );
     return message;
   });
 }

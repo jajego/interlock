@@ -47,3 +47,8 @@ database enforcement should deny their runtime role `UPDATE` and `DELETE` on
 that table. Outbox rows are inserted in parameterized batches of up to 500 to
 limit database round trips without approaching PostgreSQL's parameter limit.
 Node.js 22.14 or newer and `pg` 8.16.3 through 8.x are supported.
+
+See the committed
+[Fastify + Prisma reference application](../../examples/reference-app/README.md)
+for an ORM-owned transaction example, DX findings, and measured limitations. It
+is not a published adapter.

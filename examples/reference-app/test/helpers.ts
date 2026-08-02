@@ -1,14 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { createDatabase, type Database } from "../src/db.js";
 import { loadConfig } from "../src/config.js";
-import type { PermitActor } from "../src/domain/permits/types.js";
+import type { ActorRole, PermitActor } from "../src/domain/permits/types.js";
 
 export const actors = {
   applicant: { id: "applicant-a", tenantId: "tenant-a", role: "applicant" },
   reviewer: { id: "reviewer-a", tenantId: "tenant-a", role: "reviewer" },
+  candidate: { id: "reviewer-b", tenantId: "tenant-a", role: "reviewer" },
   admin: { id: "admin-a", tenantId: "tenant-a", role: "admin" },
   outsider: { id: "applicant-b", tenantId: "tenant-b", role: "applicant" },
-} as const satisfies Record<string, PermitActor>;
+} as const satisfies Record<string, PermitActor & { role: ActorRole }>;
 
 export function testDatabase() {
   return createDatabase(loadConfig().databaseUrl);
@@ -21,6 +22,7 @@ export async function reset(database: Database) {
     DROP TRIGGER IF EXISTS reference_fail_history ON interlock.interlock_transition_history;
     DROP TRIGGER IF EXISTS reference_fail_outbox ON interlock.interlock_outbox;
     DROP TRIGGER IF EXISTS reference_fail_completion ON interlock.interlock_idempotency;
+    DROP TRIGGER IF EXISTS reference_sensitive_primary ON permits;
   `);
   await database.$executeRawUnsafe(`
     TRUNCATE TABLE
@@ -38,6 +40,7 @@ export async function reset(database: Database) {
   for (const [id, name] of [
     ["applicant-a", "Avery Applicant"],
     ["reviewer-a", "Riley Reviewer"],
+    ["reviewer-b", "Robin Reviewer"],
     ["admin-a", "Alex Admin"],
     ["applicant-b", "Blake Applicant"],
   ] as const)
@@ -47,8 +50,13 @@ export async function reset(database: Database) {
       where: {
         tenantId_userId: { tenantId: actor.tenantId, userId: actor.id },
       },
-      update: { role: actor.role },
-      create: { tenantId: actor.tenantId, userId: actor.id, role: actor.role },
+      update: { role: actor.role, active: true },
+      create: {
+        tenantId: actor.tenantId,
+        userId: actor.id,
+        role: actor.role,
+        active: true,
+      },
     });
   await database
     .$executeRawUnsafe("DELETE FROM reference_test_failures")

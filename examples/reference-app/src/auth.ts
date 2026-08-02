@@ -1,6 +1,6 @@
 import type { FastifyRequest } from "fastify";
-import type { Database } from "./db.js";
-import type { ActorRole, PermitActor } from "./domain/permits/types.js";
+import type { Database, StatementObserver } from "./db.js";
+import type { PermitActor } from "./domain/permits/types.js";
 
 function header(request: FastifyRequest, name: string): string | undefined {
   const value = request.headers[name];
@@ -10,17 +10,15 @@ function header(request: FastifyRequest, name: string): string | undefined {
 export async function authenticate(
   database: Database,
   request: FastifyRequest,
+  observe?: StatementObserver,
 ): Promise<PermitActor | undefined> {
   const tenantId = header(request, "x-tenant-id");
   const userId = header(request, "x-user-id");
   if (!tenantId || !userId) return undefined;
+  observe?.("http-membership");
   const membership = await database.tenantMembership.findUnique({
     where: { tenantId_userId: { tenantId, userId } },
   });
-  if (
-    !membership ||
-    !["applicant", "reviewer", "admin"].includes(membership.role)
-  )
-    return undefined;
-  return { id: userId, tenantId, role: membership.role as ActorRole };
+  if (!membership?.active) return undefined;
+  return { id: userId, tenantId };
 }

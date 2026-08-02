@@ -9,3 +9,10 @@ export function createDatabase(connectionString: string) {
 
 export type Database = ReturnType<typeof createDatabase>;
 export type Transaction = Prisma.TransactionClient;
+export type StatementObserver = (operation: string) => void;
+
+export interface TransactionTiming {
+  poolWaitMs: number;
+  transactionMs: number;
+  totalMs: number;
+}

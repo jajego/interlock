@@ -24,6 +24,10 @@
       of scope.
 - [ ] Invite focused binding, transaction, packaging, and documentation
       feedback.
+- [ ] Link the
+      [production-style Fastify + Prisma reference app](examples/reference-app/README.md),
+      its [DX findings](examples/reference-app/docs/dx-findings.md), and
+      [benchmark methodology](examples/reference-app/docs/benchmark-methodology.md).
 
 ## Draft: GitHub release
 

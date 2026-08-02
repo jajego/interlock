@@ -1,8 +1,12 @@
 import { createInterlock, type ClientFor } from "@interlock/core";
 import { randomUUID } from "node:crypto";
-import type { Database } from "../../db.js";
+import type {
+  Database,
+  StatementObserver,
+  TransactionTiming,
+} from "../../db.js";
 import { PrismaInterlockDriver } from "../../interlock/prisma-driver.js";
-import { permitBinding } from "./binding.js";
+import { createPermitBinding } from "./binding.js";
 import { permitLifecycle } from "./lifecycle.js";
 import type { PermitActor } from "./types.js";
 
@@ -14,11 +18,23 @@ export interface CommandOptions {
   correlationId?: string;
 }
 
-export function createPermitService(database: Database) {
+export function createPermitService(
+  database: Database,
+  options: {
+    observeStatement?: StatementObserver;
+    observeTransaction?(timing: TransactionTiming): void;
+  } = {},
+) {
+  const observe = options.observeStatement;
   const client: ClientFor<typeof permitLifecycle> = createInterlock({
     lifecycle: permitLifecycle,
-    binding: permitBinding,
-    driver: new PrismaInterlockDriver(database),
+    binding: createPermitBinding(observe),
+    driver: new PrismaInterlockDriver(database, {
+      ...(observe ? { observeStatement: observe } : {}),
+      ...(options.observeTransaction
+        ? { observeTransaction: options.observeTransaction }
+        : {}),
+    }),
   });
   const common = (options: CommandOptions) => ({
     id: options.id,
@@ -32,8 +48,9 @@ export function createPermitService(database: Database) {
     create: (
       actor: PermitActor,
       input: { permitNumber: number; applicantName: string },
-    ) =>
-      database.permit.create({
+    ) => {
+      observe?.("permit-create");
+      return database.permit.create({
         data: {
           id: randomUUID(),
           tenantId: actor.tenantId,
@@ -42,7 +59,8 @@ export function createPermitService(database: Database) {
           applicantUserId: actor.id,
           state: "draft",
         },
-      }),
+      });
+    },
     submit: (options: CommandOptions, input: { note?: string }) =>
       client.transition({ ...common(options), event: "submit", input }),
     beginReview: (options: CommandOptions, input: { reviewerId: string }) =>

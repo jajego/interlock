@@ -20,10 +20,11 @@ export type ActorRole = "applicant" | "reviewer" | "admin";
 export interface PermitActor {
   id: string;
   tenantId: string;
-  role: ActorRole;
 }
 
 export interface PermitContext {
-  documentCount: number;
+  actorRole?: ActorRole;
+  documentCount?: number;
   assignedReviewerId?: string;
+  reviewerEligible?(reviewerId: string): Promise<boolean>;
 }

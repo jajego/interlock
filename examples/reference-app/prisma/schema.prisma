@@ -19,6 +19,8 @@ model User {
   id          String             @id
   name        String
   memberships TenantMembership[]
+  assignments ReviewAssignment[]
+  decisions   ReviewDecision[]
   createdAt   DateTime           @default(now()) @map("created_at")
   @@map("users")
 }
@@ -27,6 +29,7 @@ model TenantMembership {
   tenantId String @map("tenant_id")
   userId   String @map("user_id")
   role     String
+  active   Boolean @default(true)
   tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   @@id([tenantId, userId])
@@ -70,6 +73,7 @@ model ReviewAssignment {
   reviewerId String   @map("reviewer_id")
   createdAt  DateTime @default(now()) @map("created_at")
   permit     Permit   @relation(fields: [permitId], references: [id], onDelete: Cascade)
+  reviewer   User     @relation(fields: [reviewerId], references: [id])
   @@unique([permitId])
   @@index([reviewerId])
   @@map("review_assignments")
@@ -84,6 +88,7 @@ model ReviewDecision {
   reason       String?
   createdAt    DateTime @default(now()) @map("created_at")
   permit       Permit   @relation(fields: [permitId], references: [id], onDelete: Cascade)
+  reviewer     User     @relation(fields: [reviewerId], references: [id])
   @@index([permitId, createdAt])
   @@map("review_decisions")
 }

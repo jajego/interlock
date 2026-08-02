@@ -19,6 +19,11 @@ Raw `pg` is the first-party path. ORMs that own their transaction handles need a
 custom `TransactionDriver`; the Prisma spike is a copyable proof, not a drop-in
 adapter.
 
+For a complete application integration, see the committed
+[Fastify + Prisma reference app](../../examples/reference-app/README.md), its
+[DX findings](../../examples/reference-app/docs/dx-findings.md), and
+[benchmark methodology](../../examples/reference-app/docs/benchmark-methodology.md).
+
 Prefer a conditional `UPDATE ... RETURNING` that returns the committed resource
 from `applyPrimary()`. `hydrateBeforeCommit()` is available when joins,
 generated values, or projections require a separate read, but it adds one

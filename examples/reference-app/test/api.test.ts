@@ -33,6 +33,7 @@ test("normal lifecycle, validation, denial, and tenancy work through HTTP", asyn
     });
     assert.equal(denied.statusCode, 403);
     assert.equal(denied.json().reason.code, "REVIEWER_NOT_ASSIGNED");
+    assert.doesNotMatch(denied.body, /Authoritative membership/);
     const approved = await app.inject({
       method: "POST",
       url: `/permits/${row.id}/events/approve`,
@@ -50,6 +51,30 @@ test("normal lifecycle, validation, denial, and tenancy work through HTTP", asyn
       },
     });
     assert.equal(outsider.statusCode, 404);
+  } finally {
+    await app.close();
+  }
+});
+
+test("beginReview accepts only an active eligible reviewer in the same tenant", async () => {
+  const app = createApp(database);
+  try {
+    const row = await permit(database, { state: "submitted" });
+    const denied = await app.inject({
+      method: "POST",
+      url: `/permits/${row.id}/events/beginReview`,
+      headers: headers(actors.reviewer, "1", "ineligible"),
+      payload: { reviewerId: actors.applicant.id },
+    });
+    assert.equal(denied.statusCode, 403);
+    assert.equal(denied.json().reason.code, "REVIEWER_INELIGIBLE");
+    const accepted = await app.inject({
+      method: "POST",
+      url: `/permits/${row.id}/events/beginReview`,
+      headers: headers(actors.reviewer, "1", "eligible"),
+      payload: { reviewerId: actors.candidate.id },
+    });
+    assert.equal(accepted.statusCode, 200);
   } finally {
     await app.close();
   }
@@ -112,4 +137,44 @@ test("tenant-local permit numbers may overlap while internal IDs remain unique",
   });
   assert.notEqual(first.id, second.id);
   assert.equal(first.permitNumber, second.permitNumber);
+});
+
+test("operational details are logged but never returned to HTTP clients", async () => {
+  const logs: string[] = [];
+  const app = createApp(database, {
+    logger: {
+      level: "error",
+      stream: { write: (message: string) => logs.push(message) },
+    },
+  });
+  try {
+    const row = await permit(database, { withDocument: true });
+    await database.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION reference_sensitive_failure() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        RAISE EXCEPTION 'secret connection detail: permits_internal_constraint';
+      END $$;
+      CREATE TRIGGER reference_sensitive_primary BEFORE UPDATE ON permits
+      FOR EACH ROW EXECUTE FUNCTION reference_sensitive_failure();
+    `);
+    const response = await app.inject({
+      method: "POST",
+      url: `/permits/${row.id}/events/submit`,
+      headers: headers(actors.applicant, String(row.version), "sensitive"),
+      payload: {},
+    });
+    assert.equal(response.statusCode, 500);
+    assert.equal(response.json().error, "INTERLOCK_PERSISTENCE_FAILED");
+    assert.equal(
+      response.json().message,
+      "The transition could not be completed.",
+    );
+    assert.equal(typeof response.json().requestId, "string");
+    assert.doesNotMatch(response.body, /secret|constraint|permits_internal/i);
+    assert.match(logs.join("\n"), /secret connection detail/);
+    assert.match(logs.join("\n"), /requestId/);
+  } finally {
+    await app.close();
+  }
 });

@@ -1,31 +1,75 @@
 # Benchmark methodology
 
-The three scripts report separate layers and JSON output. They are local
-regression probes, not package guarantees.
+These scripts are local regression probes, not package guarantees or marketing
+evidence. They report Node, PostgreSQL, Prisma, OS, CPU, pool size, three round
+means, coefficient of variation, standard deviation, and range.
 
-- `benchmark:cpu` uses an in-memory driver and binding. It includes command
-  normalization, parsing, authorization, guards, projections, JSON snapshots,
-  protocol validation, and result construction. It excludes database and HTTP.
-- `benchmark:database` compares one real Interlock approval with a handwritten
-  Prisma transaction providing the same policy, CAS, related decision, history,
-  idempotency, and outbox guarantees. It does not compare against one `UPDATE`.
-- `benchmark:http` runs the Fastify server on an ephemeral local port and uses
-  Node `fetch`. Permit setup is outside the timed request.
+## Timing boundaries
 
-Each report includes warmups, sample count, p50, p95, p99, mean, throughput,
-three independent round means, coefficient of variation, Node, OS, and CPU.
-Database output also identifies PostgreSQL and Prisma. Transaction-control
-statements are included in documented query counts; migrations and seeds are
-excluded. Docker Desktop loopback, CPU scheduling, Prisma pool behavior, and low
-sample counts create substantial variance. Run multiple complete rounds before
-drawing conclusions. No latency-injected result is generated automatically; use
-a documented network proxy when evaluating round-trip sensitivity rather than
-adding networking machinery here.
+The shared benchmark API requires a `prepare()` step that returns the measured
+operation. Fixture creation, migrations, seeding, reset, and cleanup run outside
+the clock. A regression test proves preparation cost is excluded. Percentiles
+use nearest-rank. p99 is omitted below 200 samples so it is not merely the
+maximum of a small set.
 
-The database comparison deliberately reports the production permit approval path
-only. Its statement counts are audited from the fixed operation structure,
-including transaction control, rather than collected by a query-hook that could
-change adapter behavior. Duplicate, conflict, payload-size, lock-contention, and
-concurrency sweeps remain future benchmark work; this harness must not be cited
-as evidence for those scenarios. The CPU layer covers duplicate replay, outbox
-fan-out, guard count, and JSON size independently.
+`serialEquivalentOperationsPerSecond` is `1000 / mean latency`; it is explicitly
+not measured throughput. The HTTP benchmark separately runs 100 prepared
+requests at concurrency 10 and divides completed requests by wall-clock time.
+
+## Layers
+
+- `benchmark:cpu` uses an in-memory driver and binding. It covers normalization,
+  Standard Schema parsing, authorization, guards, projections, JSON snapshots,
+  protocol validation, outbox fan-out, and duplicate replay without database or
+  HTTP work.
+- `benchmark:database` alternates Interlock-first and handwritten-first order by
+  round. Both paths use the same input schema, active membership and assignment
+  locks, authorization, state/version CAS, history columns, audit, metadata,
+  related decision, outbox payload, idempotency protocol, row-count checks, and
+  Read Committed isolation. Interlock additionally validates reusable protocol
+  boundaries; there is no meaningful handwritten equivalent for that work.
+- `benchmark:http` includes parsing, database-backed header authentication,
+  service handling, pool wait, transaction work, and response serialization.
+  Permit setup and cleanup remain outside timing.
+
+Statement observers execute at every application and Interlock persistence call
+inside measured operations. Counts exclude migrations, seed, fixture setup,
+cleanup, and Prisma-owned transaction control because Prisma does not expose
+`BEGIN` and `COMMIT` through the copyable driver contract. Stable counts are
+asserted across samples for normal Interlock, handwritten, and HTTP paths;
+separate probes cover duplicate replay, conflict, one outbox row, and five
+batched outbox rows.
+
+Pool wait is measured from `$transaction()` invocation to callback entry.
+Transaction duration is measured inside the callback. Local loopback, cache
+state, CPU scheduling, and adapter behavior still introduce noise. No
+performance superiority claim is warranted.
+
+## Local results — 2026-08-02
+
+These are one Windows 10 loopback run on an Intel Core i9-9900K using Node
+24.14.0, Prisma 7.9.1, PostgreSQL 16.14, and a pool maximum of 10. CI and the
+release target remain Node 26. Results are environment observations, not package
+guarantees.
+
+| Database path                   | Samples |      p50 |       p95 |       p99 |     Mean | Round CV |
+| ------------------------------- | ------: | -------: | --------: | --------: | -------: | -------: |
+| Interlock equivalent approval   |     300 | 42.75 ms | 133.38 ms | 192.29 ms | 60.29 ms |    3.84% |
+| Handwritten equivalent approval |     300 | 43.15 ms | 123.99 ms | 154.51 ms | 58.10 ms |    2.50% |
+| HTTP submit                     |     300 | 46.93 ms | 207.72 ms | 314.11 ms | 75.98 ms |   34.33% |
+
+The database paths each issued 9 statements. Duplicate replay and version
+conflict issued 2 each; five batched outbox rows issued 1; the HTTP submission
+path issued 8. Transaction controls are excluded. The database run measured mean
+pool waits of 1.37 ms for Interlock and 1.36 ms handwritten, with mean
+inside-transaction times of 9.12 ms and 8.98 ms respectively.
+
+The HTTP concurrency-10 run completed 100/100 prepared requests with zero errors
+in 989.78 ms, or 101.03 measured operations/second. The large gap between
+database transaction time and end-to-end latency, plus the reported variance,
+means no performance superiority claim is warranted.
+
+Representative CPU-only p50/p95 results were 0.0129/0.0283 ms for a minimal
+transition, 0.0238/0.0752 ms for five outbox descriptors, 0.0783/0.1302 ms for a
+64 KiB JSON snapshot, and 0.0078/0.0144 ms for duplicate replay. Each used 150
+samples, so p99 is intentionally omitted.

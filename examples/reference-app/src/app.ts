@@ -1,7 +1,11 @@
 import { isInterlockError, type TransitionResult } from "@interlock/core";
-import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
+import Fastify, {
+  type FastifyReply,
+  type FastifyRequest,
+  type FastifyServerOptions,
+} from "fastify";
 import { authenticate } from "./auth.js";
-import type { Database } from "./db.js";
+import type { Database, StatementObserver, TransactionTiming } from "./db.js";
 import {
   createPermitService,
   type CommandOptions,
@@ -59,8 +63,9 @@ async function command(
   request: FastifyRequest,
   reply: FastifyReply,
   database: Database,
+  observe?: StatementObserver,
 ): Promise<CommandOptions | undefined> {
-  const actor = await authenticate(database, request);
+  const actor = await authenticate(database, request, observe);
   if (!actor) {
     await reply.code(401).send({ error: "UNAUTHORIZED" });
     return undefined;
@@ -90,7 +95,12 @@ async function command(
 
 export function createApp(
   database: Database,
-  options: { logger?: boolean; bodyLimit?: number } = {},
+  options: {
+    logger?: FastifyServerOptions["logger"];
+    bodyLimit?: number;
+    observeStatement?: StatementObserver;
+    observeTransaction?(timing: TransactionTiming): void;
+  } = {},
 ) {
   const app = Fastify({
     logger: options.logger ?? false,
@@ -99,19 +109,64 @@ export function createApp(
     connectionTimeout: 5_000,
     keepAliveTimeout: 5_000,
   });
-  const service = createPermitService(database);
+  const service = createPermitService(database, {
+    ...(options.observeStatement
+      ? { observeStatement: options.observeStatement }
+      : {}),
+    ...(options.observeTransaction
+      ? { observeTransaction: options.observeTransaction }
+      : {}),
+  });
+
+  const errorChain = (error: Error) => {
+    const chain: Array<{ name: string; message: string; stack?: string }> = [];
+    const seen = new Set<unknown>();
+    let current: unknown = error;
+    while (current instanceof Error && !seen.has(current)) {
+      seen.add(current);
+      chain.push({
+        name: current.name,
+        message: current.message,
+        ...(current.stack ? { stack: current.stack } : {}),
+      });
+      current = current.cause;
+    }
+    return chain;
+  };
 
   app.setErrorHandler((error, request, reply) => {
-    request.log.error({ err: error }, "request failed");
+    request.log.error(
+      {
+        err: error,
+        causes: errorChain(
+          error instanceof Error ? error : new Error(String(error)),
+        ),
+        operationId: request.id,
+        requestId: request.id,
+        method: request.method,
+        url: request.url,
+      },
+      "request failed",
+    );
     if (isInterlockError(error))
-      return reply
-        .code(500)
-        .send({ error: error.code, message: error.message });
-    return reply.code(500).send({ error: "INTERNAL_ERROR" });
+      return reply.code(500).send({
+        error: error.code,
+        message: "The transition could not be completed.",
+        requestId: request.id,
+      });
+    return reply.code(500).send({
+      error: "INTERNAL_ERROR",
+      message: "The request could not be completed.",
+      requestId: request.id,
+    });
   });
 
   app.post("/permits", async (request, reply) => {
-    const actor = await authenticate(database, request);
+    const actor = await authenticate(
+      database,
+      request,
+      options.observeStatement,
+    );
     if (!actor) return reply.code(401).send({ error: "UNAUTHORIZED" });
     const body = object(request.body);
     if (
@@ -127,7 +182,11 @@ export function createApp(
   });
 
   app.get("/permits/:id", async (request, reply) => {
-    const actor = await authenticate(database, request);
+    const actor = await authenticate(
+      database,
+      request,
+      options.observeStatement,
+    );
     if (!actor) return reply.code(401).send({ error: "UNAUTHORIZED" });
     const id = (request.params as { id: string }).id;
     const permit = await database.permit.findFirst({
@@ -146,9 +205,14 @@ export function createApp(
     ) => Promise<TransitionResult<PermitResource>>,
   ) => {
     app.post(`/permits/:id/events/${name}`, async (request, reply) => {
-      const options = await command(request, reply, database);
-      if (!options) return;
-      return sendResult(reply, await run(options, object(request.body)));
+      const commandOptions = await command(
+        request,
+        reply,
+        database,
+        options.observeStatement,
+      );
+      if (!commandOptions) return;
+      return sendResult(reply, await run(commandOptions, object(request.body)));
     });
   };
   eventRoute("submit", (options, input) =>
@@ -181,13 +245,19 @@ export function createApp(
   );
 
   app.get("/permits/:id/history", async (request, reply) => {
-    const actor = await authenticate(database, request);
+    const actor = await authenticate(
+      database,
+      request,
+      options.observeStatement,
+    );
     if (!actor) return reply.code(401).send({ error: "UNAUTHORIZED" });
     const id = (request.params as { id: string }).id;
+    options.observeStatement?.("http-permit-visibility");
     const visible = await database.permit.count({
       where: { id, tenantId: actor.tenantId },
     });
     if (!visible) return reply.code(404).send({ error: "NOT_FOUND" });
+    options.observeStatement?.("http-history");
     const rows = await database.$queryRaw<Array<Record<string, unknown>>>`
       SELECT * FROM interlock.interlock_transition_history
       WHERE lifecycle = 'permit' AND resource_id = ${id}
@@ -197,8 +267,13 @@ export function createApp(
   });
 
   app.get("/outbox", async (request, reply) => {
-    const actor = await authenticate(database, request);
+    const actor = await authenticate(
+      database,
+      request,
+      options.observeStatement,
+    );
     if (!actor) return reply.code(401).send({ error: "UNAUTHORIZED" });
+    options.observeStatement?.("http-outbox");
     return database.$queryRaw<Array<Record<string, unknown>>>`
       SELECT * FROM interlock.interlock_outbox
       WHERE payload->>'tenantId' = ${actor.tenantId}

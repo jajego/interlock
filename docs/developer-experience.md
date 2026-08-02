@@ -35,6 +35,15 @@ the Prisma binding directly; application model writes and raw Interlock-table
 writes share that handle. Interlock does not open a separate `pg` transaction
 and no Prisma adapter package is introduced.
 
+The
+[production-style reference application](../examples/reference-app/README.md) is
+the maintained, copyable Prisma example. Its
+[DX findings](../examples/reference-app/docs/dx-findings.md) separate generic
+Interlock plumbing from Prisma-specific work, and its
+[benchmark methodology](../examples/reference-app/docs/benchmark-methodology.md)
+documents the comparison limits. It is an external-consumer evaluation, not a
+starter kit or published adapter.
+
 ## Remaining ceremony
 
 `defineEvent()` is deliberate for events that need strongly correlated input and

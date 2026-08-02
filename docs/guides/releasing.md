@@ -8,6 +8,11 @@ entire local quality matrix, inspect `pnpm pack:check`, and publish through the
 protected workflow with the npm `next` tag. Do not use `latest` or run
 `changeset version` for this already-prepared release.
 
+After all checks pass, the workflow configures the standard GitHub Actions bot
+identity, runs `pnpm release`, and then runs `git push --follow-tags`. The push
+occurs only after successful npm publication and sends generated package tags;
+the workflow does not commit or push source changes.
+
 ## Later releases
 
 Every change after the first alpha requires a Changeset. Release preparation

@@ -1,27 +1,92 @@
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const packageNames = ["core", "postgres", "conformance"];
-const versions = packageNames.map(
-  (name) =>
-    JSON.parse(readFileSync(join(root, "packages", name, "package.json")))
-      .version,
-);
-const pending = readdirSync(join(root, ".changeset")).filter((name) =>
-  name.endsWith(".md"),
-);
+const releaseDate = "2026-08-02";
+const repository = "git+https://github.com/jajego/interlock.git";
+const approvedActions = new Set([
+  "actions/checkout@v6",
+  "actions/setup-node@v6",
+  "pnpm/action-setup@v6",
+]);
 
-assert.equal(new Set(versions).size, 1, "Release package versions must match.");
-assert.equal(pending.length, 0, `Pending Changesets: ${pending.join(", ")}`);
-assert.match(
-  readFileSync(join(root, "CHANGELOG.md"), "utf8"),
-  new RegExp(versions[0].replaceAll(".", "\\.")),
-  `CHANGELOG.md must mention ${versions[0]}.`,
-);
-process.stdout.write(
-  `Release state ready for ${versions[0]} with npm tag next.\n`,
-);
+export function checkRelease(root) {
+  const manifests = packageNames.map((name) =>
+    JSON.parse(readFileSync(join(root, "packages", name, "package.json"))),
+  );
+  const versions = manifests.map((manifest) => manifest.version);
+  const version = versions[0];
+  assert.equal(
+    new Set(versions).size,
+    1,
+    "Release package versions must match.",
+  );
+  assert.ok(version, "Release package version is required.");
+
+  const pending = readdirSync(join(root, ".changeset")).filter((name) =>
+    name.endsWith(".md"),
+  );
+  assert.equal(pending.length, 0, `Pending Changesets: ${pending.join(", ")}`);
+
+  const changelog = readFileSync(join(root, "CHANGELOG.md"), "utf8");
+  assert.match(
+    changelog,
+    new RegExp(`^## ${version.replaceAll(".", "\\.")} — ${releaseDate}$`, "m"),
+    `CHANGELOG.md must contain the exact ${version} release heading.`,
+  );
+
+  for (const manifest of manifests) {
+    assert.equal(
+      manifest.repository?.url,
+      repository,
+      `${manifest.name} repository URL must match.`,
+    );
+    assert.equal(manifest.publishConfig?.access, "public");
+    assert.equal(manifest.publishConfig?.provenance, true);
+  }
+
+  const rootManifest = JSON.parse(readFileSync(join(root, "package.json")));
+  assert.match(
+    rootManifest.scripts?.release ?? "",
+    /changeset publish --tag next/,
+    "The first alpha must publish under the next dist-tag.",
+  );
+
+  for (const workflow of ["ci.yml", "release.yml"]) {
+    const contents = readFileSync(
+      join(root, ".github", "workflows", workflow),
+      "utf8",
+    );
+    for (const match of contents.matchAll(/uses:\s*([^\s]+)/g))
+      assert.ok(
+        approvedActions.has(match[1]),
+        `${workflow} uses unapproved action ${match[1]}.`,
+      );
+  }
+
+  const releaseWorkflow = readFileSync(
+    join(root, ".github", "workflows", "release.yml"),
+    "utf8",
+  );
+  const publish = releaseWorkflow.indexOf("pnpm release");
+  const push = releaseWorkflow.indexOf("git push --follow-tags");
+  assert.ok(
+    publish >= 0 && push > publish,
+    "Release tags must be pushed after publish.",
+  );
+  return { version, tag: "next" };
+}
+
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+if (
+  process.argv[1] &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  const release = checkRelease(root);
+  process.stdout.write(
+    `Release state ready for ${release.version} with npm tag ${release.tag}.\n`,
+  );
+}
