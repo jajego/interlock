@@ -6,7 +6,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with: { version: 11.9.0 }
       - uses: actions/setup-node@v4
@@ -33,7 +33,7 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://interlock:interlock@localhost:5432/interlock
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v4
         with: { version: 11.9.0 }
       - uses: actions/setup-node@v4
