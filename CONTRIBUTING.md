@@ -1,6 +1,6 @@
 # Contributing
 
-Use Node.js 24+, pnpm 11.18, and PostgreSQL 16. Before submitting a pull
+Use Node.js 26+, pnpm 11.18, and PostgreSQL 16. Before submitting a pull
 request, run:
 
 ```sh
