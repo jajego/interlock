@@ -203,6 +203,40 @@ const idempotentLifecycle = defineLifecycle<Resource>()({
     close: defineEvent<Resource>()({ from: ["open"], to: "closed" }),
   },
 });
+
+const discriminatedFingerprintLifecycle = defineLifecycle<Resource>()({
+  name: "fingerprint-inputs",
+  states: ["open", "closed", "rejected"],
+  history: { resourceType: "item" },
+  idempotency: {
+    fingerprint: (args) => {
+      switch (args.event) {
+        case "close":
+          void (args.parsedInput satisfies undefined);
+          break;
+        case "reject":
+          void args.parsedInput.reason;
+          break;
+        default: {
+          const exhaustive: never = args;
+          void exhaustive;
+        }
+      }
+      return `${args.resourceId}:${args.event}`;
+    },
+  },
+  events: {
+    close: defineEvent<Resource>()(noInput, {
+      from: ["open"],
+      to: "closed",
+    }),
+    reject: defineEvent<Resource>()(reasonSchema, {
+      from: ["open"],
+      to: "rejected",
+    }),
+  },
+});
+void discriminatedFingerprintLifecycle;
 declare const idempotentBinding: BindingFor<object, typeof idempotentLifecycle>;
 const idempotentClient = createInterlock({
   lifecycle: idempotentLifecycle,

@@ -26,6 +26,7 @@ const sql = await readFile(
 const migrationPool = new Pool({ connectionString: process.env.DATABASE_URL });
 const client = await migrationPool.connect();
 try {
+  await client.query('CREATE SCHEMA IF NOT EXISTS "interlock"');
   await client.query('SET search_path = "interlock"');
   await client.query(sql);
 } finally {
@@ -34,9 +35,9 @@ try {
 }
 ```
 
-The migration targets the transaction-local active schema and is intended for a
-clean installation. Run it on a dedicated migration connection. Runtime SQL
-safely qualifies the configured schema; it does not depend on a shared pool's
+The migration targets the active schema and is intended for a clean
+installation. Run it on a dedicated migration connection. Runtime SQL safely
+qualifies the configured schema; it does not depend on a shared pool's
 `search_path`. Idempotent transitions use `read-committed`; the executor rejects
 higher isolation levels rather than claiming an unproved algorithm.
 

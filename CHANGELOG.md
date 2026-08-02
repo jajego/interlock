@@ -17,3 +17,7 @@
 - Made actor and idempotency request fields reflect lifecycle capabilities,
   accepted ordinary version strings from bindings, constrained event states, and
   added operation-aware projections plus derived binding/client types.
+- Hardened protocol boundaries with own-property event lookup, immutable
+  callback envelopes, immediate history and outbox snapshots,
+  event-discriminated fingerprints, explicit unsupported-idempotency results,
+  and validated consistency declarations.

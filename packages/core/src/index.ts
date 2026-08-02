@@ -19,6 +19,7 @@ export {
   type AssessmentArgs,
   type EventDefinition,
   type EventBuilder,
+  type FingerprintArgs,
   type IdempotencyConfiguration,
   type LifecycleDefinition,
   type Lifecycle,

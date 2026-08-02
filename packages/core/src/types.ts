@@ -88,10 +88,10 @@ export type RelatedDataConsistency = {
   notes: string;
 };
 
-export const primaryRowOnly = {
+export const primaryRowOnly = Object.freeze({
   strategy: "none",
   notes: "This event depends only on the primary resource row.",
-} as const satisfies RelatedDataConsistency;
+} as const satisfies RelatedDataConsistency);
 
 /** Immutable command identity shared by lifecycle and persistence callbacks. */
 export interface InterlockOperation<Actor, Event extends string = string> {
@@ -272,6 +272,7 @@ export type ResourceBinding<
 > = ResourceBindingBase<Transaction, Resource, Actor, Mutations> &
   ContextBinding<Transaction, Actor, Context, Extract<keyof Mutations, string>>;
 
+/** Expected authoritative command outcome; operational failures throw. */
 export type TransitionResult<Resource> =
   | {
       status: "committed";
@@ -297,6 +298,7 @@ export type TransitionResult<Resource> =
   | { status: "invalid-input"; issues: readonly InputIssue[] }
   | { status: "idempotency-conflict"; key: string };
 
+/** Expected advisory assessment outcome. */
 export type AssessmentResult =
   | {
       status: "allowed";

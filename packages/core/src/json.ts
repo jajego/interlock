@@ -35,14 +35,6 @@ export function assertJsonValue(
   throw new TypeError(`${path} is not JSON-safe`);
 }
 
-export function cloneJsonValue(value: JsonValue): JsonValue {
-  if (value === null || typeof value !== "object") return value;
-  if (Array.isArray(value)) return value.map(cloneJsonValue);
-  return Object.fromEntries(
-    Object.entries(value).map(([key, item]) => [key, cloneJsonValue(item)]),
-  );
-}
-
 export function snapshotJsonValue(value: unknown): JsonValue {
   const path: Array<string | number> = [];
   const ancestors = new WeakSet<object>();

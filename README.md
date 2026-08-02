@@ -184,7 +184,7 @@ const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const orders = createInterlock({
   lifecycle: orderLifecycle,
   binding: orderBinding,
-  driver: new PostgresDriver(pool),
+  driver: new PostgresDriver(pool, { schema: "interlock" }),
 });
 ```
 
@@ -352,10 +352,10 @@ runtime driver qualifies its own tables directly:
 const driver = new PostgresDriver(pool, { schema: "interlock" });
 ```
 
-Apply the self-transactional migration on a dedicated connection whose
-`search_path` selects the migration schema. Do not change a shared runtime
-pool's session setting. The migration targets clean installations and does not
-upgrade older incompatible schemas.
+On a dedicated migration connection, create the `interlock` schema, set that
+connection's session `search_path`, and execute the exported self-transactional
+migration. Do not change a shared runtime pool's session setting. The migration
+targets clean installations and does not upgrade older incompatible schemas.
 
 Idempotent transitions are supported at `read committed` isolation. Interlock
 rejects higher isolation levels for idempotent commands rather than advertising
