@@ -5,12 +5,14 @@ export {
 } from "./errors.js";
 export {
   createInterlock,
-  type AssessmentRequestFor,
   type BindingFor,
   type ClientFor,
   type InterlockClient,
-  type TransitionRequestFor,
 } from "./executor.js";
+export {
+  type AssessmentRequestFor,
+  type TransitionRequestFor,
+} from "./request.js";
 export { assertJsonValue, canonicalHash, canonicalJson } from "./json.js";
 export {
   defineLifecycle,
@@ -20,6 +22,7 @@ export {
   type EventDefinition,
   type EventBuilder,
   type FingerprintArgs,
+  type GuardDefinition,
   type IdempotencyConfiguration,
   type LifecycleDefinition,
   type Lifecycle,

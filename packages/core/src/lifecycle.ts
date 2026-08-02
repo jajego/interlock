@@ -67,21 +67,32 @@ export type ParsedInputOf<SchemaType> =
       ? Parsed
       : undefined;
 
+/** One named, sequential policy check evaluated after authorization. */
+export interface GuardDefinition<Resource, Actor, Context, Parsed> {
+  /** Stable diagnostic name included in public guard denials. */
+  name: string;
+  /** Returns a synchronous or asynchronous decision without performing writes. */
+  evaluate(
+    args: AssessmentArgs<Resource, Actor, Context, Parsed>,
+  ): Decision | Promise<Decision>;
+}
+
 type EventCore<Resource, Actor, Context, Parsed> = {
+  /** States from which the event may run. */
   from: readonly string[];
+  /** State committed by a successful transition. */
   to: string;
+  /** Optional policy check; `transition()` repeats it authoritatively. */
   authorize?: (
     args: AssessmentArgs<Resource, Actor, Context, Parsed>,
   ) => Decision | Promise<Decision>;
-  guards?: readonly {
-    name: string;
-    evaluate(
-      args: AssessmentArgs<Resource, Actor, Context, Parsed>,
-    ): Decision | Promise<Decision>;
-  }[];
+  /** Ordered checks that stop at the first denial. */
+  guards?: readonly GuardDefinition<Resource, Actor, Context, Parsed>[];
+  /** Produces detached JSON history data before the first write. */
   audit?: (
     args: ProjectionArgs<Resource, Actor, Context, Parsed>,
   ) => ProjectionResult<JsonValue>;
+  /** Produces detached outbox descriptors before the first write. */
   outbox?: (
     args: ProjectionArgs<Resource, Actor, Context, Parsed>,
   ) => ProjectionResult<
@@ -94,11 +105,13 @@ type MutationProjection<Resource, Actor, Context, Parsed, Mutation> = [
 ] extends [undefined]
   ? { mutate?: undefined }
   : {
+      /** Plans the event-correlated application mutation before writes begin. */
       mutate(
         args: ProjectionArgs<Resource, Actor, Context, Parsed>,
       ): ProjectionResult<Mutation>;
     };
 
+/** Defines one typed lifecycle edge and its synchronous or asynchronous plan. */
 export type EventDefinition<
   Resource,
   Actor,
@@ -149,9 +162,11 @@ export interface LifecycleDefinition<
   events: EventMap<Resource, Actor, Context, Schemas, Mutations>;
   history: {
     resourceType: string;
+    /** Projects optional actor identity copied into transition history. */
     actor?: (
       actor: Actor,
     ) => ProjectionResult<{ actorType?: string; actorId?: string }>;
+    /** Projects optional detached JSON metadata before writes begin. */
     metadata?: (args: {
       readonly request: {
         readonly resourceId: string;
@@ -177,6 +192,7 @@ export type FingerprintArgs<Actor, Schemas extends EventSchemaMap> = {
 }[Extract<keyof Schemas, string>];
 
 export type IdempotencyConfiguration<Actor, Schemas extends EventSchemaMap> = {
+  /** Returns a stable, non-empty fingerprint for the normalized event command. */
   fingerprint(args: FingerprintArgs<Actor, Schemas>): string;
 };
 
@@ -276,38 +292,38 @@ async function parseSchema(
   ].validate(input);
   if (!result || typeof result !== "object")
     protocol("Standard Schema returned an invalid result.");
-  if ("issues" in result && result.issues !== undefined) {
-    if (!Array.isArray(result.issues))
+  const issuesValue = "issues" in result ? result.issues : undefined;
+  if (issuesValue !== undefined) {
+    if (!Array.isArray(issuesValue))
       protocol("Standard Schema issues must be an array.");
     return {
       success: false,
-      issues: result.issues.map((issue) => {
+      issues: issuesValue.map((issue) => {
+        if (!issue || typeof issue !== "object")
+          protocol("Standard Schema returned a malformed issue.");
+        const message = "message" in issue ? issue.message : undefined;
+        const path = "path" in issue ? issue.path : undefined;
         if (
-          !issue ||
-          typeof issue !== "object" ||
-          !("message" in issue) ||
-          typeof issue.message !== "string" ||
-          ("path" in issue &&
-            issue.path !== undefined &&
-            !Array.isArray(issue.path))
+          typeof message !== "string" ||
+          (path !== undefined && !Array.isArray(path))
         )
           protocol("Standard Schema returned a malformed issue.");
         return {
           path: normalizePath(
-            "path" in issue
-              ? (issue.path as
-                  ReadonlyArray<PropertyKey | { key: PropertyKey }> | undefined)
-              : undefined,
+            path as
+              ReadonlyArray<PropertyKey | { key: PropertyKey }> | undefined,
           ),
           code: "INVALID_INPUT",
-          message: issue.message,
+          message,
         };
       }),
     };
   }
-  if (!("value" in result))
+  const hasValue = "value" in result;
+  const parsedValue = hasValue ? result.value : undefined;
+  if (!hasValue)
     protocol("Standard Schema success result must contain a value.");
-  return { success: true, value: result.value };
+  return { success: true, value: parsedValue };
 }
 
 function invalid(message: string): never {
@@ -321,39 +337,39 @@ function protocol(message: string): never {
 function normalizeParseResult(value: unknown): ParseResult<unknown> {
   if (!value || typeof value !== "object" || !("success" in value))
     protocol("Input parser returned an invalid result.");
-  if (value.success === true) {
-    if (!("value" in value))
+  const success = value.success;
+  if (success === true) {
+    const hasValue = "value" in value;
+    const parsedValue = hasValue ? value.value : undefined;
+    if (!hasValue)
       protocol("Input parser success result must contain a value.");
-    return { success: true, value: value.value };
+    return { success: true, value: parsedValue };
   }
-  if (
-    value.success !== false ||
-    !("issues" in value) ||
-    !Array.isArray(value.issues)
-  )
+  const issuesValue = "issues" in value ? value.issues : undefined;
+  if (success !== false || !Array.isArray(issuesValue))
     protocol("Input parser failure result must contain an issues array.");
   return {
     success: false,
-    issues: value.issues.map((issue) => {
+    issues: issuesValue.map((issue) => {
+      if (!issue || typeof issue !== "object")
+        protocol("Input parser returned a malformed issue.");
+      const code = "code" in issue ? issue.code : undefined;
+      const message = "message" in issue ? issue.message : undefined;
+      const path = "path" in issue ? issue.path : undefined;
       if (
-        !issue ||
-        typeof issue !== "object" ||
-        !("code" in issue) ||
-        typeof issue.code !== "string" ||
-        !("message" in issue) ||
-        typeof issue.message !== "string" ||
-        !("path" in issue) ||
-        !Array.isArray(issue.path) ||
-        issue.path.some(
+        typeof code !== "string" ||
+        typeof message !== "string" ||
+        !Array.isArray(path) ||
+        path.some(
           (part: unknown) =>
             typeof part !== "string" && typeof part !== "number",
         )
       )
         protocol("Input parser returned a malformed issue.");
       return {
-        path: [...issue.path],
-        code: issue.code,
-        message: issue.message,
+        path: [...path],
+        code,
+        message,
       };
     }),
   };
@@ -441,6 +457,7 @@ export interface EventBuilder<Resource, Actor, Context> {
   ): Definition & { readonly mutate: () => undefined };
 }
 
+/** Creates an event builder that preserves event-specific input and mutation types. */
 export function defineEvent<
   Resource,
   Actor = undefined,
@@ -455,6 +472,7 @@ export function defineEvent<
   }) as EventBuilder<Resource, Actor, Context>;
 }
 
+/** Validates and snapshots a lifecycle definition into an immutable runtime API. */
 export function defineLifecycle<
   Resource,
   Actor = undefined,

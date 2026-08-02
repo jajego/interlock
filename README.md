@@ -278,8 +278,8 @@ flowchart LR
   A["Validate command"] --> B["Begin transaction"]
   B --> C["Claim idempotency"]
   C --> D["Load and check resource"]
-  D --> E["Apply primary and related writes"]
-  E --> F["Append history and outbox"]
+  D --> E["Apply primary and append history"]
+  E --> F["Apply related writes and append outbox"]
   F --> G["Complete idempotency"]
   G --> H["Commit"]
   C -. expected outcome .-> R["Rollback"]
@@ -293,11 +293,16 @@ Inside one driver-owned transaction it:
 1. claims the idempotency key;
 2. loads the primary resource;
 3. rechecks authorization and guards;
-4. prepares mutation, audit, and outbox data;
-5. conditionally updates state and version;
-6. applies related writes;
-7. inserts append-only history and outbox rows;
+4. prepares and validates the complete write plan;
+5. applies the primary state-and-version update;
+6. inserts append-only history, then applies related writes;
+7. inserts outbox rows;
 8. completes idempotency and commits.
+
+History precedes related writes inside the same transaction. Related tables may
+therefore use an immediate foreign key to the supplied `transitionId`; a later
+related, outbox, hydration, or completion failure still rolls the history row
+back.
 
 Bindings should normally return the updated resource directly from a conditional
 `UPDATE ... RETURNING`. `hydrateBeforeCommit()` adds another database round trip
@@ -374,7 +379,7 @@ an unproved concurrency algorithm.
 - [Runnable PostgreSQL example](examples/postgres-node/README.md)
 - [PostgreSQL integration guide](docs/guides/postgres.md)
 - [Idempotency model](docs/concepts/idempotency.md)
-- [Transaction protocol](docs/architecture/transaction-protocol.md)
+- [Architecture and transaction protocol](docs/architecture.md)
 - [Error-code reference](docs/errors.md)
 - [Lifecycle builder ADR](docs/adr/0001-explicit-typed-lifecycle-builder.md)
 

@@ -30,6 +30,8 @@ const packages = {
     "index",
     "json",
     "lifecycle",
+    "protocol",
+    "request",
     "types",
     "version",
   ],

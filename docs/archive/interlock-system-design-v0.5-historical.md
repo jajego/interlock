@@ -1,3 +1,9 @@
+# Historical Interlock system design v0.5
+
+> **Superseded:** This proposal does not describe the current public API. It is
+> retained only as design history. Use the root `README.md`,
+> `docs/architecture.md`, current code, and tests for `0.1.0-alpha.0`.
+
 # Interlock
 
 ## A Type-Safe Transaction Protocol for Domain Transitions on Persisted Records

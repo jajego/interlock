@@ -77,6 +77,7 @@ export interface TransactionOptions {
   readOnly?: boolean;
 }
 export type RelatedDataConsistency = {
+  /** Mechanism that stabilizes related facts consulted by policy checks. */
   strategy:
     | "none"
     | "row-locking"
@@ -85,9 +86,11 @@ export type RelatedDataConsistency = {
     | "serializable"
     | "database-constraint"
     | "custom";
+  /** Concrete application-specific explanation of the mechanism. */
   notes: string;
 };
 
+/** Declares that policy depends only on the version-checked primary row. */
 export const primaryRowOnly = Object.freeze({
   strategy: "none",
   notes: "This event depends only on the primary resource row.",
@@ -165,10 +168,12 @@ export interface TransactionDriver<Transaction> {
     operation: (transaction: Transaction) => Promise<Result>,
     options?: TransactionOptions,
   ): Promise<Result>;
+  /** Claims a key or returns conflict/stored duplicate history in this transaction. */
   claimIdempotency(
     transaction: Transaction,
     claim: IdempotencyClaim,
   ): Promise<IdempotencyClaimResult>;
+  /** Links the successful claim to inserted history before commit. */
   completeIdempotency(
     transaction: Transaction,
     completion: {
@@ -179,10 +184,12 @@ export interface TransactionDriver<Transaction> {
       completedAt: Date;
     },
   ): Promise<void>;
+  /** Inserts the immutable transition record; no success value is expected. */
   insertTransition(
     transaction: Transaction,
     transition: TransitionRecord,
   ): Promise<void>;
+  /** Inserts all planned outbox records atomically; batching is driver-owned. */
   insertOutbox(
     transaction: Transaction,
     messages: readonly OutboxInsert[],
@@ -195,16 +202,26 @@ interface ResourceBindingBase<
   Actor,
   Mutations extends Record<string, unknown>,
 > {
+  /** Chooses transaction options before opening the operation transaction. */
   transactionOptions?(
     operation: InterlockOperation<Actor, Extract<keyof Mutations, string>>,
   ): TransactionOptions;
+  /** Loads the primary resource using the scoped transaction and operation identity. */
   loadPrimary(
     transaction: Transaction,
     operation: InterlockOperation<Actor, Extract<keyof Mutations, string>>,
   ): Promise<Resource | null>;
+  /** Extracts the globally unique lifecycle resource ID for validation. */
   getId(resource: Resource): string;
+  /** Extracts the current lifecycle state for source-state validation. */
   getState(resource: Resource): string;
+  /** Extracts a positive BIGINT string; Interlock brands it internally. */
   getVersion(resource: Resource): string;
+  /**
+   * Performs the state-and-version compare-and-swap. `applied` must return the
+   * requested ID, target state, and next version; conflicts may include a
+   * validated current state/version snapshot.
+   */
   applyPrimary(
     transaction: Transaction,
     args: {
@@ -220,6 +237,10 @@ interface ResourceBindingBase<
     | { status: "conflict"; actual?: { state: string; version: string } }
     | { status: "not-found" }
   >;
+  /**
+   * Optionally writes related application rows after history insertion and
+   * before outbox insertion. Work extends the same transaction and lock time.
+   */
   applyRelated?(
     transaction: Transaction,
     args: {
@@ -230,6 +251,10 @@ interface ResourceBindingBase<
       occurredAt: Date;
     },
   ): Promise<void>;
+  /**
+   * Optionally reloads the committed-shape resource before commit. This adds
+   * transaction duration and must preserve ID, target state, and next version.
+   */
   hydrateBeforeCommit?(
     transaction: Transaction,
     args: {
@@ -237,6 +262,7 @@ interface ResourceBindingBase<
       operation: WriteOperation<Actor, Mutations>;
     },
   ): Promise<Resource>;
+  /** Declares how related facts used by this binding remain consistent. */
   consistency:
     | RelatedDataConsistency
     | ((event: Extract<keyof Mutations, string>) => RelatedDataConsistency);
@@ -247,6 +273,7 @@ type ContextBinding<Transaction, Actor, Context, Event extends string> = [
 ] extends [undefined | void]
   ? {
       contextFactory?: {
+        /** Creates request-scoped read helpers on the operation transaction. */
         create(
           transaction: Transaction,
           operation: InterlockOperation<Actor, Event>,
@@ -255,6 +282,7 @@ type ContextBinding<Transaction, Actor, Context, Event extends string> = [
     }
   : {
       contextFactory: {
+        /** Creates required request-scoped context on the operation transaction. */
         create(
           transaction: Transaction,
           operation: InterlockOperation<Actor, Event>,
@@ -275,12 +303,18 @@ export type ResourceBinding<
 /** Expected authoritative command outcome; operational failures throw. */
 export type TransitionResult<Resource> =
   | {
+      /** A newly executed command committed with its validated resource. */
       status: "committed";
       duplicate: false;
       resource: Resource;
       transition: TransitionRecord;
     }
-  | { status: "committed"; duplicate: true; transition: TransitionRecord }
+  | {
+      /** Stored history for a committed duplicate; current resource is not loaded. */
+      status: "committed";
+      duplicate: true;
+      transition: TransitionRecord;
+    }
   | {
       status: "denied";
       event: string;

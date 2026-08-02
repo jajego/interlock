@@ -883,6 +883,87 @@ test(
 );
 
 test(
+  "related-write failure rolls back the earlier history insertion",
+  { skip },
+  async () => {
+    const { pool } = await fixture();
+    const applications = createInterlock({
+      lifecycle: applicationLifecycle,
+      driver: new PostgresDriver(pool),
+      binding: {
+        ...applicationBinding,
+        applyRelated: async () => {
+          throw new Error("injected related failure");
+        },
+      },
+    });
+    try {
+      await assert.rejects(
+        applications.transition({
+          id: "a1",
+          event: "approve",
+          input: {},
+          actor: reviewer,
+          expectedVersion: "2",
+          idempotency: { key: "related-failure" },
+        }),
+        (error) =>
+          isInterlockError(error) &&
+          error.code === "INTERLOCK_PERSISTENCE_FAILED" &&
+          error.cause?.message === "injected related failure",
+      );
+      const result = await pool.query(`SELECT
+        (SELECT version::text FROM applications WHERE id = 'a1') version,
+        (SELECT count(*)::int FROM application_decisions) related,
+        (SELECT count(*)::int FROM interlock_transition_history) history,
+        (SELECT count(*)::int FROM interlock_outbox) outbox,
+        (SELECT count(*)::int FROM interlock_idempotency) idempotency`);
+      assert.deepEqual(result.rows[0], {
+        version: "2",
+        related: 0,
+        history: 0,
+        outbox: 0,
+        idempotency: 0,
+      });
+    } finally {
+      await pool.end();
+    }
+  },
+);
+
+test(
+  "related writes may reference history through an immediate foreign key",
+  { skip },
+  async () => {
+    const { pool, applications } = await fixture();
+    try {
+      await pool.query(`ALTER TABLE application_decisions
+        ADD CONSTRAINT application_decisions_transition_history_fkey
+        FOREIGN KEY (transition_id) REFERENCES interlock_transition_history(id)`);
+      const result = await applications.transition({
+        id: "a1",
+        event: "approve",
+        input: {},
+        actor: reviewer,
+        expectedVersion: "2",
+        idempotency: { key: "history-foreign-key" },
+      });
+      assert.equal(result.status, "committed");
+      assert.equal(
+        (
+          await pool.query(
+            "SELECT count(*)::int count FROM application_decisions d JOIN interlock_transition_history h ON h.id = d.transition_id",
+          )
+        ).rows[0].count,
+        1,
+      );
+    } finally {
+      await pool.end();
+    }
+  },
+);
+
+test(
   "higher isolation idempotency is rejected before PostgreSQL writes",
   { skip },
   async () => {

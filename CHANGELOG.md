@@ -21,3 +21,8 @@
   callback envelopes, immediate history and outbox snapshots,
   event-discriminated fingerprints, explicit unsupported-idempotency results,
   and validated consistency declarations.
+- Eliminated repeated reads from request, callback, binding, and driver result
+  objects; transition history now precedes related writes so immediate foreign
+  keys can reference the planned transition inside the same transaction.
+- Replaced the stale root design proposal with maintained alpha architecture
+  documentation and expanded public API hover documentation.

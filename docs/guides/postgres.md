@@ -43,7 +43,12 @@ so, and outbox messages should normally reference large blobs rather than
 embedding them.
 
 The migration creates objects in the active migration schema. Configure runtime
-qualification once with `new PostgresDriver(pool, { schema: "interlock" })` and
-apply the migration with `SET LOCAL search_path` inside the migration
-transaction. Never alter a shared pool's session `search_path`. Existing
-incompatible tables are not upgraded in place.
+qualification once with `new PostgresDriver(pool, { schema: "interlock" })`. On
+a dedicated migration connection, create the schema, set that connection's
+session `search_path`, and execute the exported self-transactional migration.
+Never alter a shared runtime pool's session setting. Existing incompatible
+tables are not upgraded in place.
+
+Interlock inserts transition history before `applyRelated()`, so related tables
+may use an immediate foreign key to `interlock_transition_history(id)`. Every
+row remains uncommitted until the whole transition succeeds.

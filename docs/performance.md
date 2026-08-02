@@ -175,3 +175,20 @@ type tests compiled in 1.322 seconds on Node.js 26.5.0.
 The refactor adds no dependencies. Final package sizes and the complete command
 matrix are reported in the release handoff rather than treated as performance
 guarantees.
+
+## Single-read boundary refactor check
+
+The final boundary-snapshot and module split retained the deterministic
+statement counts recorded above: non-idempotent 5, first idempotent 7, duplicate
+replay 4, and one or five outbox rows 6. A Node.js 26.5/PostgreSQL 16.14 run
+measured respective p50 values of 67.4, 74.6, 2.1, 91.7, and 116.9 ms.
+Synchronous and asynchronous projection scenarios both used 5 statements and
+measured 83.7 ms p50. These timings remain within the Docker loopback variance
+already documented and are not evidence of a latency change.
+
+The core tarball grew from 20,211 to 23,741 bytes because request and protocol
+validation now ship as separate declaration/runtime modules with expanded JSDoc.
+PostgreSQL and conformance tarballs remained 8,885 and 6,964 bytes. No runtime
+dependency was added. The benchmark harness now passes its isolated schema to
+`PostgresDriver`; before that fix, the documented command attempted to write
+Interlock artifacts to `public` and could not produce a valid baseline.

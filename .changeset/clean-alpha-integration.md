@@ -10,4 +10,6 @@ asynchronous planning, named clients, curated exports, and schema-qualified
 PostgreSQL persistence. This also makes actor and idempotency fields
 lifecycle-aware, accepts unbranded adapter versions, constrains event states,
 and adds projection operation context plus derived binding and client helper
-types.
+types. Protocol objects are now read once into validated snapshots, transition
+history is inserted before related writes, and the maintained architecture and
+public JSDoc describe the implemented alpha contract.

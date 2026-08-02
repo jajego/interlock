@@ -91,7 +91,7 @@ SELECT
   (SELECT count(*)::int FROM completion) completion`;
 
 async function measureArtifacts(pool, mode) {
-  const driver = new PostgresDriver(pool);
+  const driver = new PostgresDriver(pool, { schema });
   const samples = [];
   for (let index = 0; index < 30; index += 1) {
     const id = randomUUID();
