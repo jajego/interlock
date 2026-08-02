@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { InterlockError } from "../packages/core/dist/index.js";
 import {
+  barrier,
   verifyExecutorAtomicity,
   verifyResourceBinding,
 } from "../packages/conformance/dist/index.js";
@@ -75,7 +76,7 @@ test("executor conformance preserves arbitrary fixture baselines", async () => {
   });
 });
 
-async function verifyMemoryBinding(relatedWrites) {
+async function verifyMemoryBinding(relatedWrites, hydrate = false) {
   const state = { resource: undefined, related: 0 };
   const driver = memoryDriver(state);
   const binding = {
@@ -103,6 +104,13 @@ async function verifyMemoryBinding(relatedWrites) {
           applyRelated: async () => {
             state.related += relatedWrites;
           },
+        }
+      : {}),
+    ...(hydrate
+      ? {
+          hydrateBeforeCommit: async (_transaction, resource) => ({
+            ...resource,
+          }),
         }
       : {}),
   };
@@ -136,4 +144,21 @@ test("binding conformance supports zero related writes", async () => {
 
 test("binding conformance supports multiple related writes", async () => {
   await verifyMemoryBinding(2);
+});
+
+test("binding conformance verifies in-transaction hydration", async () => {
+  await verifyMemoryBinding(0, true);
+});
+
+test("barriers release every waiter only after reaching capacity", async () => {
+  const wait = barrier(2);
+  let released = false;
+  const first = wait().then(() => {
+    released = true;
+  });
+  await Promise.resolve();
+  assert.equal(released, false);
+  await wait();
+  await first;
+  assert.equal(released, true);
 });

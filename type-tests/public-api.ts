@@ -38,13 +38,21 @@ const noInputRequest: TransitionRequestFor<
 };
 void noInputRequest;
 
-applications.transition({
+const transitionResult = await applications.transition({
   id: "a1",
   event: "approve",
   input: { note: "Ready" },
   actor,
   expectedVersion: "1",
 });
+if (transitionResult.status === "committed") {
+  if (transitionResult.duplicate) {
+    // @ts-expect-error duplicate replays intentionally omit a current resource
+    void transitionResult.resource;
+  } else {
+    void transitionResult.resource.state;
+  }
+}
 
 applications.transition({
   id: "a1",
@@ -72,3 +80,22 @@ applications.assess({
   // @ts-expect-error assess does not accept write preconditions
   expectedVersion: "1",
 });
+
+applications.transition({
+  id: "a1",
+  event: "approve",
+  input: { note: "Ready" },
+  actor,
+  // @ts-expect-error expected versions are PostgreSQL BIGINT strings
+  expectedVersion: 1,
+});
+
+const unexpectedNoInput: TransitionRequestFor<
+  { close: typeof noInput },
+  undefined
+> = {
+  ...noInputRequest,
+  // @ts-expect-error noInput events reject submitted input
+  input: {},
+};
+void unexpectedNoInput;

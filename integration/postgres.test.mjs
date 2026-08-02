@@ -85,6 +85,29 @@ test(
   },
 );
 
+test(
+  "migration can be reapplied without losing existing data",
+  { skip },
+  async () => {
+    const pool = new Pool({ connectionString: url });
+    try {
+      await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
+      await pool.query(migration);
+      await pool.query(`INSERT INTO interlock_transition_history (
+      id, lifecycle, resource_type, resource_id, event, from_state, to_state,
+      previous_version, next_version, occurred_at
+    ) VALUES ('existing', 'item', 'item', 'item-1', 'move', 'a', 'b', 1, 2, now())`);
+      await pool.query(migration);
+      const result = await pool.query(
+        "SELECT id FROM interlock_transition_history WHERE id = 'existing'",
+      );
+      assert.deepEqual(result.rows, [{ id: "existing" }]);
+    } finally {
+      await pool.end();
+    }
+  },
+);
+
 const reviewer = {
   id: "reviewer",
   permissions: ["applications:approve", "applications:reject"],

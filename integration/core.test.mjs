@@ -9,6 +9,7 @@ import {
   isInterlockError,
   incrementVersion,
   MAX_BIGINT_VERSION,
+  noInput,
   parseVersionToken,
 } from "../packages/core/dist/index.js";
 import {
@@ -42,6 +43,22 @@ test("JSON validation rejects cycles deterministically", () => {
   const value = {};
   value.self = value;
   assert.throws(() => assertJsonValue(value), /cyclic/);
+  const array = [];
+  array.push(array);
+  assert.throws(() => assertJsonValue(array), /cyclic/);
+});
+
+test("JSON validation rejects every non-JSON runtime category", () => {
+  for (const value of [
+    undefined,
+    NaN,
+    Infinity,
+    1n,
+    new Date(),
+    { value: undefined },
+    Object.create(null),
+  ])
+    assert.throws(() => assertJsonValue(value), TypeError);
 });
 
 test("definitions reject accidental self transitions", () => {
@@ -123,6 +140,177 @@ test("validated definitions snapshot caller-owned input parsers", async () => {
   assert.deepEqual(parsed, { success: true, value: "original" });
 });
 
+test("no-input and Standard Schema adapters normalize runtime results", async () => {
+  assert.deepEqual(await noInput.parse(undefined), {
+    success: true,
+    value: undefined,
+  });
+  assert.equal((await noInput.parse("unexpected")).success, false);
+
+  for (const validate of [
+    () => ({ value: "parsed" }),
+    async () => ({ value: "parsed" }),
+  ]) {
+    const lifecycle = defineLifecycle()({
+      name: "schema",
+      states: ["a", "b"],
+      history: { resourceType: "item" },
+      events: {
+        move: {
+          from: ["a"],
+          to: "b",
+          input: { "~standard": { version: 1, validate } },
+          mutate: () => ({}),
+        },
+      },
+    });
+    assert.deepEqual(
+      await lifecycle.parseInput(lifecycle.getEvent("move"), {}),
+      { success: true, value: "parsed" },
+    );
+  }
+
+  const standardFailure = defineLifecycle()({
+    name: "schema",
+    states: ["a", "b"],
+    history: { resourceType: "item" },
+    events: {
+      move: {
+        from: ["a"],
+        to: "b",
+        input: {
+          "~standard": {
+            version: 1,
+            validate: () => ({
+              issues: [{ message: "bad", path: [{ key: "field" }, 2] }],
+            }),
+          },
+        },
+        mutate: () => ({}),
+      },
+    },
+  });
+  assert.deepEqual(
+    await standardFailure.parseInput(standardFailure.getEvent("move"), {}),
+    {
+      success: false,
+      issues: [{ path: ["field", 2], code: "INVALID_INPUT", message: "bad" }],
+    },
+  );
+
+  const customFailure = defineLifecycle()({
+    name: "schema",
+    states: ["a", "b"],
+    history: { resourceType: "item" },
+    events: {
+      move: {
+        from: ["a"],
+        to: "b",
+        input: {
+          parse: () => ({
+            success: false,
+            issues: [{ path: ["field"], code: "BAD", message: "bad" }],
+          }),
+        },
+        mutate: () => ({}),
+      },
+    },
+  });
+  assert.deepEqual(
+    await customFailure.parseInput(customFailure.getEvent("move"), {}),
+    {
+      success: false,
+      issues: [{ path: ["field"], code: "BAD", message: "bad" }],
+    },
+  );
+});
+
+test("schema adapters reject malformed success, failure, and issue results", async () => {
+  for (const input of [
+    { parse: () => ({}) },
+    { parse: () => ({ success: true }) },
+    { parse: () => ({ success: false }) },
+    {
+      parse: () => ({
+        success: false,
+        issues: [{ path: [null], code: "bad", message: "bad" }],
+      }),
+    },
+    { "~standard": { version: 1, validate: () => ({}) } },
+    {
+      "~standard": {
+        version: 1,
+        validate: () => ({ issues: [{ message: 1 }] }),
+      },
+    },
+    {
+      "~standard": {
+        version: 1,
+        validate: () => ({ issues: [{ message: "bad", path: "field" }] }),
+      },
+    },
+  ]) {
+    const lifecycle = defineLifecycle()({
+      name: "schema",
+      states: ["a", "b"],
+      history: { resourceType: "item" },
+      events: {
+        move: { from: ["a"], to: "b", input, mutate: () => ({}) },
+      },
+    });
+    await assert.rejects(
+      lifecycle.parseInput(lifecycle.getEvent("move"), {}),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+    );
+  }
+});
+
+test("lifecycle definitions reject malformed public fields", () => {
+  const valid = () => ({
+    name: "item",
+    states: ["a", "b"],
+    history: { resourceType: "item" },
+    events: { move: { from: ["a"], to: "b", mutate: () => ({}) } },
+  });
+  const cases = [
+    { ...valid(), name: "Bad Name" },
+    { ...valid(), states: [] },
+    { ...valid(), history: { resourceType: "" } },
+    { ...valid(), definitionVersion: "" },
+    { ...valid(), idempotency: { fingerprint: true } },
+    { ...valid(), events: null },
+    { ...valid(), events: { Bad: valid().events.move } },
+    { ...valid(), events: { move: { ...valid().events.move, from: [] } } },
+    { ...valid(), events: { move: { ...valid().events.move, to: "missing" } } },
+    {
+      ...valid(),
+      events: { move: { ...valid().events.move, guards: [null] } },
+    },
+    { ...valid(), events: { move: { from: ["a"], to: "b" } } },
+    {
+      ...valid(),
+      events: { move: { ...valid().events.move, authorize: true } },
+    },
+    {
+      ...valid(),
+      events: { move: { ...valid().events.move, input: {} } },
+    },
+    {
+      ...valid(),
+      events: { move: { ...valid().events.move, input: { parse: true } } },
+    },
+  ];
+  for (const definition of cases)
+    assert.throws(
+      () => defineLifecycle()(definition),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_INVALID",
+    );
+});
+
 function executorFixture(options = {}) {
   const order = [];
   let inserted;
@@ -136,9 +324,15 @@ function executorFixture(options = {}) {
     claimIdempotency: async (_transaction, claim) => {
       order.push("claim");
       claimed = claim;
-      return options.claim ?? { status: "claimed", claim };
+      return (
+        options.claimCallback?.(claim) ??
+        options.claim ?? { status: "claimed", claim }
+      );
     },
-    completeIdempotency: async () => order.push("complete"),
+    completeIdempotency: async () => {
+      order.push("complete");
+      return options.complete?.();
+    },
     insertTransition: async (_transaction, value) => {
       order.push("history");
       inserted = value;
@@ -147,6 +341,7 @@ function executorFixture(options = {}) {
     insertOutbox: async (_transaction, messages) => {
       order.push("outbox");
       insertedOutbox = messages;
+      return options.insertOutbox?.(messages);
     },
   };
   const definition = {
@@ -154,13 +349,22 @@ function executorFixture(options = {}) {
     states: ["a", "b"],
     history: {
       resourceType: "item",
-      actor: () => options.actorIdentity ?? {},
+      actor: (actor) =>
+        typeof options.actorCallback === "function"
+          ? options.actorCallback(actor)
+          : (options.actorIdentity ?? {}),
       metadata: (args) => {
         order.push("metadata");
         return options.metadataCallback?.(args) ?? options.metadata ?? {};
       },
     },
-    idempotency: { fingerprint: () => "fingerprint" },
+    definitionVersion: options.definitionVersion,
+    idempotency: {
+      fingerprint: (...args) =>
+        typeof options.fingerprintCallback === "function"
+          ? options.fingerprintCallback(...args)
+          : "fingerprint",
+    },
     events: {
       move: {
         from: ["a"],
@@ -181,18 +385,26 @@ function executorFixture(options = {}) {
     },
   };
   const binding = {
-    transactionOptions: () => options.transactionOptions ?? {},
-    loadPrimary: async () => ({
-      id: options.loadedId ?? "item-1",
-      state: "a",
-      version: "1",
-    }),
+    transactionOptions: (args) =>
+      options.transactionOptionsCallback?.(args) ??
+      options.transactionOptions ??
+      {},
+    loadPrimary: async (...args) =>
+      typeof options.loadPrimary === "function"
+        ? options.loadPrimary(...args)
+        : {
+            id: options.loadedId ?? "item-1",
+            state: "a",
+            version: "1",
+          },
     getId: (resource) => resource.id,
     getState: (resource) => resource.state,
     getVersion: (resource) => resource.version,
     applyPrimary: async (_transaction, args) => {
       order.push("apply");
+      options.observeApply?.(args);
       return (
+        (await options.applyPrimary?.(args)) ??
         options.applied ?? {
           status: "applied",
           resource: {
@@ -203,8 +415,11 @@ function executorFixture(options = {}) {
         }
       );
     },
+    applyRelated: options.applyRelated,
     hydrateBeforeCommit: options.hydrate,
-    contextFactory: { create: () => ({}) },
+    contextFactory: {
+      create: (...args) => options.context?.(...args) ?? {},
+    },
     consistency: () => ({ strategy: "none", notes: "fixture" }),
   };
   const clocks = [
@@ -222,6 +437,7 @@ function executorFixture(options = {}) {
         return clocks.shift();
       }),
     ids: options.ids ?? (() => "transition-1"),
+    maxOutboxPayloadBytes: options.maxOutboxPayloadBytes,
   });
   return {
     subject,
@@ -433,6 +649,195 @@ test("runtime boundaries return unknown-event and invalid-input", async () => {
   assert.equal(invalid.status, "invalid-input");
 });
 
+test("assessment returns allowed and not-found outcomes", async () => {
+  const allowed = await executorFixture().subject.assess({
+    id: "item-1",
+    event: "move",
+    actor: undefined,
+  });
+  assert.deepEqual(allowed, {
+    status: "allowed",
+    currentState: "a",
+    targetState: "b",
+  });
+  assert.deepEqual(
+    await executorFixture({ loadPrimary: () => undefined }).subject.assess({
+      id: "item-1",
+      event: "move",
+      actor: undefined,
+    }),
+    { status: "not-found" },
+  );
+});
+
+test("advisory load and context failures preserve their causes", async () => {
+  for (const [options, code] of [
+    [
+      {
+        loadPrimary: () => {
+          throw new Error("load");
+        },
+      },
+      "INTERLOCK_PERSISTENCE_FAILED",
+    ],
+    [
+      {
+        context: () => {
+          throw new Error("context");
+        },
+      },
+      "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+    ],
+  ]) {
+    await assert.rejects(
+      executorFixture(options).subject.assess({
+        id: "item-1",
+        event: "move",
+        actor: undefined,
+      }),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === code &&
+        error.cause?.message ===
+          (code === "INTERLOCK_PERSISTENCE_FAILED" ? "load" : "context"),
+    );
+  }
+});
+
+test("non-idempotent loaded-version transitions omit idempotency fields", async () => {
+  let applied;
+  const fixture = executorFixture({
+    definitionVersion: "2026-01",
+    observeApply: (args) => {
+      applied = args;
+    },
+  });
+  const result = await fixture.subject.transition({
+    id: "item-1",
+    event: "move",
+    actor: undefined,
+    expectedVersion: "use-loaded-version",
+  });
+  assert.equal(result.status, "committed");
+  assert.equal(applied.expectedVersion, "1");
+  assert.equal(fixture.order.includes("claim"), false);
+  assert.equal(fixture.order.includes("complete"), false);
+  assert.equal("idempotencyKey" in result.transition, false);
+  assert.equal(result.transition.definitionVersion, "2026-01");
+});
+
+test("version and primary-update conflicts return canonical outcomes", async () => {
+  const stale = await executorFixture().subject.transition({
+    ...transitionRequest,
+    expectedVersion: "2",
+  });
+  assert.deepEqual(stale, {
+    status: "conflict",
+    expected: "2",
+    actual: { state: "a", version: "1" },
+  });
+
+  for (const [applied, expected] of [
+    [{ status: "not-found" }, { status: "not-found" }],
+    [{ status: "conflict" }, { status: "conflict", expected: "1" }],
+    [
+      { status: "conflict", actual: { state: "a", version: "2" } },
+      {
+        status: "conflict",
+        expected: "1",
+        actual: { state: "a", version: "2" },
+      },
+    ],
+  ]) {
+    const fixture = executorFixture({ applied });
+    assert.deepEqual(
+      await fixture.subject.transition(transitionRequest),
+      expected,
+    );
+    assert.equal(fixture.order.includes("history"), false);
+  }
+});
+
+test("idempotency claim conflicts and malformed results are distinguished", async () => {
+  const conflict = executorFixture({ claim: { status: "conflict" } });
+  assert.deepEqual(await conflict.subject.transition(transitionRequest), {
+    status: "idempotency-conflict",
+    key: "key",
+  });
+  for (const claim of [{}, { status: "claimed-wrong" }, { status: 1 }])
+    await assert.rejects(
+      executorFixture({ claim }).subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+    );
+});
+
+test("request identity and expected-version boundaries reject malformed values", async () => {
+  for (const [request, status] of [
+    [{ ...transitionRequest, id: "" }, "invalid-input"],
+    [{ ...transitionRequest, event: "" }, "unknown-event"],
+    [{ ...transitionRequest, expectedVersion: "0" }, "invalid-input"],
+    [
+      { ...transitionRequest, expectedVersion: "not-a-version" },
+      "invalid-input",
+    ],
+  ]) {
+    const result = await executorFixture().subject.transition(request);
+    assert.equal(result.status, status);
+  }
+});
+
+test("outbox descriptors enforce shape and exact byte limits before writes", async () => {
+  const accepted = executorFixture({
+    maxOutboxPayloadBytes: 5,
+    outbox: () => [{ topic: "probe", key: "item-1", payload: "123" }],
+  });
+  assert.equal(
+    (await accepted.subject.transition(transitionRequest)).status,
+    "committed",
+  );
+  assert.equal(accepted.getOutbox()[0].key, "item-1");
+
+  for (const outbox of [
+    () => "not-an-array",
+    () => [null],
+    () => [{ topic: "", payload: {} }],
+    () => [{ topic: "probe", key: 1, payload: {} }],
+  ]) {
+    const fixture = executorFixture({ outbox });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+    );
+    assert.equal(fixture.order.includes("apply"), false);
+  }
+
+  const oversized = executorFixture({
+    maxOutboxPayloadBytes: 4,
+    outbox: () => [{ topic: "probe", payload: "123" }],
+  });
+  await assert.rejects(
+    oversized.subject.transition(transitionRequest),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_SERIALIZATION_FAILED",
+  );
+  assert.equal(oversized.order.includes("apply"), false);
+});
+
+test("executor configuration rejects invalid outbox limits", () => {
+  for (const maxOutboxPayloadBytes of [0, -1, 1.5])
+    assert.throws(
+      () => executorFixture({ maxOutboxPayloadBytes }),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_INVALID",
+    );
+});
+
 test("empty idempotency keys are rejected before a transaction", async () => {
   const fixture = executorFixture();
   const result = await fixture.subject.transition({
@@ -482,6 +887,50 @@ test("assess forces read-only transactions and strips private denial data", asyn
       publicMessage: "Not allowed",
     },
   ]);
+});
+
+test("authorization denials are public and roll back authoritative work", async () => {
+  const fixture = executorFixture({
+    authorize: () => ({
+      allowed: false,
+      denial: {
+        code: "FORBIDDEN",
+        publicMessage: "Not allowed",
+        privateMessage: "secret",
+      },
+    }),
+  });
+  assert.deepEqual(await fixture.subject.transition(transitionRequest), {
+    status: "denied",
+    event: "move",
+    currentState: "a",
+    targetState: "b",
+    reasons: [
+      {
+        source: "authorization",
+        code: "FORBIDDEN",
+        publicMessage: "Not allowed",
+      },
+    ],
+  });
+  assert.equal(fixture.order.includes("apply"), false);
+});
+
+test("denial details must be JSON-safe", async () => {
+  const fixture = executorFixture({
+    authorize: () => ({
+      allowed: false,
+      denial: { code: "NO", details: { invalid: undefined } },
+    }),
+  });
+  await assert.rejects(
+    fixture.subject.transition(transitionRequest),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION" &&
+      error.cause instanceof TypeError,
+  );
+  assert.equal(fixture.order.includes("apply"), false);
 });
 
 test("callbacks cannot mutate the loaded concurrency boundary", async () => {
@@ -619,6 +1068,211 @@ test("malformed parser, decision, and binding results fail with protocol errors"
       cases[index],
       (error) => isInterlockError(error) && error.code === expected[index],
     );
+});
+
+test("callback and persistence failures preserve operation-specific codes and causes", async () => {
+  const cases = [
+    [
+      "transaction options",
+      "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+      (cause) => ({
+        transactionOptionsCallback: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "clock",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        now: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "input",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        input: {
+          parse: () => {
+            throw cause;
+          },
+        },
+      }),
+    ],
+    [
+      "fingerprint",
+      "INTERLOCK_SERIALIZATION_FAILED",
+      (cause) => ({
+        fingerprintCallback: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "claim",
+      "INTERLOCK_PERSISTENCE_FAILED",
+      (cause) => ({
+        claimCallback: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "load",
+      "INTERLOCK_PERSISTENCE_FAILED",
+      (cause) => ({
+        loadPrimary: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "context",
+      "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+      (cause) => ({
+        context: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "authorization",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        authorize: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "guard",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        guards: [
+          {
+            name: "ready",
+            evaluate: () => {
+              throw cause;
+            },
+          },
+        ],
+      }),
+    ],
+    [
+      "mutation",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        mutate: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "audit",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        audit: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "outbox projection",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        outbox: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "actor",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        actorCallback: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "metadata",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        metadataCallback: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "ID allocation",
+      "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      (cause) => ({
+        ids: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "primary",
+      "INTERLOCK_PERSISTENCE_FAILED",
+      (cause) => ({
+        applyPrimary: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "related",
+      "INTERLOCK_PERSISTENCE_FAILED",
+      (cause) => ({
+        applyRelated: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "history",
+      "INTERLOCK_HISTORY_FAILED",
+      (cause) => ({
+        insertTransition: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "outbox insertion",
+      "INTERLOCK_OUTBOX_FAILED",
+      (cause) => ({
+        insertOutbox: () => {
+          throw cause;
+        },
+      }),
+    ],
+    [
+      "completion",
+      "INTERLOCK_PERSISTENCE_FAILED",
+      (cause) => ({
+        complete: () => {
+          throw cause;
+        },
+      }),
+    ],
+  ];
+  for (const [label, code, options] of cases) {
+    const cause = new Error(label);
+    const request =
+      label === "input"
+        ? { ...transitionRequest, input: {} }
+        : transitionRequest;
+    await assert.rejects(
+      executorFixture(options(cause)).subject.transition(request),
+      (error) =>
+        isInterlockError(error) && error.code === code && error.cause === cause,
+      label,
+    );
+  }
 });
 
 test("unsupported Standard Schema versions are rejected at construction", () => {
@@ -867,6 +1521,19 @@ test("release failures do not replace transaction failures", async () => {
       error.code === "INTERLOCK_TRANSACTION_FAILED" &&
       error.cause === original,
   );
+});
+
+test("listener cleanup failures do not replace transaction success", async () => {
+  const client = {
+    on: () => undefined,
+    off: () => {
+      throw new Error("listener cleanup failed");
+    },
+    query: async () => ({ rowCount: 0, rows: [] }),
+    release: () => undefined,
+  };
+  const driver = new PostgresDriver({ connect: async () => client });
+  assert.equal(await driver.transaction(async () => "done"), "done");
 });
 
 test("rollback failure does not replace the original execution failure", async () => {
