@@ -22,6 +22,7 @@ export interface ProjectionArgs<Resource, Actor, Context, Input> {
 
 type ProjectionResult<Value> = Value | PromiseLike<Value>;
 
+/** Read-only values supplied to authorization and guard callbacks. */
 export type AssessmentArgs<Resource, Actor, Context, Input> = Pick<
   ProjectionArgs<Resource, Actor, Context, Input>,
   "resource" | "actor" | "context" | "input"
@@ -29,6 +30,7 @@ export type AssessmentArgs<Resource, Actor, Context, Input> = Pick<
 
 export type AnySchema = Schema<never, unknown> | Schema<unknown, unknown>;
 
+/** Input schema for events that accept no submitted input. */
 export const noInput: InputSchema<undefined, undefined> = {
   parse: (input) =>
     input === undefined
@@ -149,6 +151,7 @@ export type EventMap<
   >;
 };
 
+/** Declarative states, events, history projection, and optional idempotency. */
 export interface LifecycleDefinition<
   Resource,
   Actor,
@@ -180,6 +183,7 @@ export interface LifecycleDefinition<
   idempotency?: IdempotencyConfiguration<Actor, Schemas>;
 }
 
+/** Event-discriminated normalized command identity used for idempotency. */
 export type FingerprintArgs<Actor, Schemas extends EventSchemaMap> = {
   [Event in Extract<keyof Schemas, string>]: {
     readonly lifecycle: string;
@@ -191,12 +195,13 @@ export type FingerprintArgs<Actor, Schemas extends EventSchemaMap> = {
   };
 }[Extract<keyof Schemas, string>];
 
+/** Configures deterministic fingerprints for idempotent command replay. */
 export type IdempotencyConfiguration<Actor, Schemas extends EventSchemaMap> = {
   /** Returns a stable, non-empty fingerprint for the normalized event command. */
   fingerprint(args: FingerprintArgs<Actor, Schemas>): string;
 };
 
-/** A validated lifecycle definition with input parsing and event lookup. */
+/** A validated lifecycle definition with input parsing and safe event lookup. */
 export type Lifecycle<
   Resource,
   Actor,
@@ -409,10 +414,12 @@ export type EventMutation<Event> = Event extends {
   ? Awaited<Result>
   : undefined;
 
+/** Maps each event name to the mutation type inferred from its planner. */
 export type MutationMap<Events> = {
   [Event in keyof Events]: EventMutation<Events[Event]>;
 };
 
+/** Callable builder preserving each event's submitted input and mutation types. */
 export interface EventBuilder<Resource, Actor, Context> {
   <
     SchemaType extends AnySchema,
@@ -485,7 +492,10 @@ export function defineEvent<
   }) as EventBuilder<Resource, Actor, Context>;
 }
 
-/** Validates and snapshots a lifecycle definition into an immutable runtime API. */
+/**
+ * Validates and snapshots a lifecycle definition into an immutable runtime API.
+ * The curried form preserves literal state and event inference.
+ */
 export function defineLifecycle<
   Resource,
   Actor = undefined,

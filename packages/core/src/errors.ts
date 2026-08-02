@@ -1,3 +1,4 @@
+/** Stable codes for unexpected operational failures and integration violations. */
 export type InterlockErrorCode =
   | "INTERLOCK_DEFINITION_INVALID"
   | "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION"
@@ -18,6 +19,11 @@ export type InterlockErrorCode =
 
 const interlockErrorBrand = Symbol.for("@interlock/core/InterlockError");
 
+/**
+ * An operational failure or protocol violation thrown by Interlock.
+ * Expected domain outcomes such as denial, conflict, invalid input, and
+ * not-found are returned as result values instead.
+ */
 export class InterlockError extends Error {
   readonly [interlockErrorBrand] = true;
 
@@ -31,6 +37,10 @@ export class InterlockError extends Error {
   }
 }
 
+/**
+ * The supported runtime check for Interlock failures. It remains reliable when
+ * duplicated package copies or JavaScript realms make `instanceof` unreliable.
+ */
 export function isInterlockError(value: unknown): value is InterlockError {
   if (!(value instanceof Error)) return false;
   const candidate = value as Error & {

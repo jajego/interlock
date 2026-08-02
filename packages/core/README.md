@@ -8,23 +8,76 @@ npm install @interlock/core@next
 ```
 
 ```ts
-import { createInterlock, defineEvent, defineLifecycle } from "@interlock/core";
+import {
+  createInterlock,
+  defineEvent,
+  defineLifecycle,
+  type BindingFor,
+  type InputSchema,
+  type TransactionDriver,
+} from "@interlock/core";
 
-const event = defineEvent();
-const lifecycle = defineLifecycle()({
+interface Order {
+  id: string;
+  state: "pending" | "approved";
+  version: string;
+  approvedBy?: string;
+}
+
+interface ApprovalInput {
+  approvedBy: string;
+}
+
+const approvalInput: InputSchema<ApprovalInput, ApprovalInput> = {
+  parse(input) {
+    if (
+      typeof input === "object" &&
+      input !== null &&
+      "approvedBy" in input &&
+      typeof input.approvedBy === "string"
+    ) {
+      return { success: true, value: { approvedBy: input.approvedBy } };
+    }
+    return {
+      success: false,
+      issues: [
+        {
+          path: ["input", "approvedBy"],
+          code: "INVALID_APPROVER",
+          message: "approvedBy must be a string.",
+        },
+      ],
+    };
+  },
+};
+
+const event = defineEvent<Order>();
+const lifecycle = defineLifecycle<Order>()({
   name: "order",
   states: ["pending", "approved"],
   history: { resourceType: "order" },
   events: {
-    approve: event({
+    approve: event(approvalInput, {
       from: ["pending"],
       to: "approved",
+      mutate: ({ input }) => ({ approvedBy: input.approvedBy }),
     }),
   },
 });
 
-const orders = createInterlock({ lifecycle, binding, driver });
+function createOrderClient<Transaction>(
+  binding: BindingFor<Transaction, typeof lifecycle>,
+  driver: TransactionDriver<Transaction>,
+) {
+  return createInterlock({ lifecycle, binding, driver });
+}
 ```
+
+This abbreviated example leaves persistence as typed function parameters.
+Complete runnable integrations:
+
+- [Minimal PostgreSQL example](https://github.com/jajego/interlock/tree/main/examples/postgres-node)
+- [Production-style Fastify + Prisma reference app](https://github.com/jajego/interlock/tree/main/examples/reference-app)
 
 The public surface includes `defineLifecycle`, `createInterlock`, typed
 `assess()` and `transition()` calls, stable `InterlockError` codes,
@@ -42,7 +95,5 @@ See the [repository README](https://github.com/jajego/interlock#readme) for the
 complete transaction protocol, runnable PostgreSQL example, guarantees, and
 limitations.
 
-The repository also includes a committed
-[Fastify + Prisma reference application](../../examples/reference-app/README.md)
-that evaluates Interlock as an external consumer. It is not a starter kit or a
-published Prisma adapter.
+The reference application evaluates Interlock as an external consumer. It is not
+a starter kit or a published Prisma adapter.

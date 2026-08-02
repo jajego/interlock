@@ -10,6 +10,10 @@ Interlock gives important domain changes one dependable transaction boundary.
 Your version-checked resource update, related writes, append-only history,
 idempotency result, and outbox messages commit together or roll back together.
 
+> **Alpha:** Interlock `0.1.0-alpha.0` is published under the npm `next` tag.
+> APIs may change before 1.0, with meaningful changes documented in the
+> [changelog](CHANGELOG.md).
+
 XState models complex statecharts. Temporal runs durable workflows. Interlock
 makes a single domain transition, and every database write it requires, commit
 atomically in PostgreSQL. Use it for approvals, account status changes, order
@@ -150,17 +154,21 @@ const orderLifecycle = defineLifecycle<Order, Actor>()({
 ### 2. Connect your table
 
 A resource binding maps Interlock's transaction protocol to your existing
-tables. `loadPrimary()` receives the immutable operation before policy runs, so
-it can apply tenant-local transaction context without closure state:
+tables. Tenant identity remains application-owned, so every application query
+that needs tenant isolation must enforce the tenant scope explicitly:
 
 ```ts
-loadPrimary: async (transaction, operation) => {
-  await transaction.query("select set_config('app.tenant_id', $1, true)", [
-    operation.actor.tenantId,
-  ]);
-  return loadOrder(transaction, operation.id);
-};
+loadPrimary: (transaction, operation) =>
+  loadOrder(transaction, {
+    id: operation.id,
+    tenantId: operation.actor.tenantId,
+  });
 ```
+
+Interlock's infrastructure tables currently require resource IDs to be globally
+unique within a lifecycle, including across tenants. A PostgreSQL setting such
+as `app.tenant_id` provides no isolation by itself; it contributes only when an
+RLS policy, trigger, or other database logic consumes it.
 
 `applyPrimary()` receives the selected event and its correlated mutation on
 `args.operation`; the compare-and-swap remains ordinary SQL:

@@ -4,7 +4,7 @@ Reference `pg` transaction driver plus the versioned Interlock idempotency,
 history, and outbox schema. Apply the exported `migration.sql` before use.
 
 ```sh
-pnpm add @interlock/core @interlock/postgres pg
+pnpm add @interlock/core@next @interlock/postgres@next pg
 ```
 
 Applications create the `pg` `Pool` and pass it to `new PostgresDriver(pool)`;
@@ -49,6 +49,6 @@ limit database round trips without approaching PostgreSQL's parameter limit.
 Node.js 22.14 or newer and `pg` 8.16.3 through 8.x are supported.
 
 See the committed
-[Fastify + Prisma reference application](../../examples/reference-app/README.md)
+[Fastify + Prisma reference application](https://github.com/jajego/interlock/tree/main/examples/reference-app)
 for an ORM-owned transaction example, DX findings, and measured limitations. It
 is not a published adapter.

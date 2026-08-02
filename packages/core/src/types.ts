@@ -1,19 +1,26 @@
+/** JSON primitive accepted by history, metadata, denial, and outbox fields. */
 export type JsonPrimitive = string | number | boolean | null;
+/** Recursively JSON-safe value accepted at public protocol boundaries. */
 export type JsonValue =
   JsonPrimitive | readonly JsonValue[] | { readonly [key: string]: JsonValue };
 
+/** Validated positive PostgreSQL `BIGINT` represented as a decimal string. */
 export type VersionToken = string & { readonly __brand: "VersionToken" };
+/** Explicit version token or a request to use the version loaded in-transaction. */
 export type VersionExpectation = VersionToken | "use-loaded-version";
+/** One structured runtime input-validation issue. */
 export interface InputIssue {
   path: readonly (string | number)[];
   code: string;
   message: string;
 }
 
+/** Successful parsed input or one or more validation issues. */
 export type ParseResult<Value> =
   | { success: true; value: Value }
   | { success: false; issues: readonly InputIssue[] };
 
+/** Minimal dependency-free input schema accepted by lifecycle events. */
 export interface InputSchema<Submitted, Parsed> {
   readonly types?: {
     readonly submitted: Submitted;
@@ -22,6 +29,7 @@ export interface InputSchema<Submitted, Parsed> {
   parse(input: unknown): ParseResult<Parsed> | Promise<ParseResult<Parsed>>;
 }
 
+/** Standard Schema v1 adapter accepted directly by lifecycle events. */
 export interface StandardSchema<Submitted, Parsed> {
   readonly "~standard": {
     readonly version: 1;
@@ -57,9 +65,14 @@ export interface StandardSchema<Submitted, Parsed> {
   };
 }
 
+/** Supported custom or Standard Schema input validator. */
 export type Schema<Submitted, Parsed> =
   InputSchema<Submitted, Parsed> | StandardSchema<Submitted, Parsed>;
 
+/**
+ * Full denial produced inside application policy. Private fields are retained
+ * for application diagnostics and are not returned in public result values.
+ */
 export interface InternalDenial {
   code: string;
   message?: string;
@@ -67,6 +80,7 @@ export interface InternalDenial {
   privateMessage?: string;
   privateDetails?: JsonValue;
 }
+/** Sanitized denial information safe to expose to the command caller. */
 export interface PublicDenial {
   source: "state" | "authorization" | "guard";
   rule?: string;
@@ -74,19 +88,32 @@ export interface PublicDenial {
   message?: string;
   publicDetails?: JsonValue;
 }
+/** Policy callback result; `false` creates a generic public denial. */
 export type Decision =
   boolean | { allowed: true } | { allowed: false; denial: InternalDenial };
+/** Returns an explicit allowed policy decision. */
 export const allow = (): Decision => ({ allowed: true });
+/**
+ * Returns a denied policy decision. Only `message` and `publicDetails` may be
+ * exposed to callers; keep secrets in `privateMessage` or `privateDetails`.
+ */
 export const deny = (denial: InternalDenial): Decision => ({
   allowed: false,
   denial,
 });
 
+/** Whether policy evaluation is advisory or authoritative. */
 export type AssessmentMode = "advisory" | "authoritative";
+/** Isolation and read-only options requested from a transaction driver. */
 export interface TransactionOptions {
   isolation?: "read-committed" | "repeatable-read" | "serializable";
   readOnly?: boolean;
 }
+/**
+ * Documents how application-owned related data read by authorization or guards
+ * is stabilized. Interlock validates the declaration but does not enforce the
+ * named locking, versioning, constraint, or custom mechanism.
+ */
 export type RelatedDataConsistency = {
   /** Mechanism that stabilizes related facts consulted by policy checks. */
   strategy:
@@ -118,6 +145,7 @@ export interface InterlockOperation<Actor, Event extends string = string> {
   readonly causationId?: string;
 }
 
+/** Event-correlated write operation including its planned application mutation. */
 export type WriteOperation<Actor, Mutations extends Record<string, unknown>> = {
   [Event in Extract<keyof Mutations, string>]: InterlockOperation<
     Actor,
@@ -125,6 +153,7 @@ export type WriteOperation<Actor, Mutations extends Record<string, unknown>> = {
   > & { readonly mutation: Mutations[Event] };
 }[Extract<keyof Mutations, string>];
 
+/** Record inserted into append-only history for one committed transition. */
 export interface TransitionRecord {
   id: string;
   lifecycle: string;
@@ -146,6 +175,7 @@ export interface TransitionRecord {
   definitionVersion?: string;
   occurredAt: Date;
 }
+/** One immutable transactional-outbox record planned for insertion. */
 export interface OutboxInsert {
   id: string;
   lifecycle: string;
@@ -157,6 +187,7 @@ export interface OutboxInsert {
   payload: JsonValue;
   createdAt: Date;
 }
+/** Identity and fingerprint used to claim an idempotent command. */
 export interface IdempotencyClaim {
   lifecycle: string;
   resourceId: string;
@@ -164,11 +195,19 @@ export interface IdempotencyClaim {
   fingerprint: string;
   createdAt: Date;
 }
+/** Result of claiming an idempotency key inside the active transaction. */
 export type IdempotencyClaimResult =
   | { status: "claimed" }
   | { status: "conflict" }
   | { status: "duplicate"; transition: TransitionRecord };
 
+/**
+ * Persists Interlock infrastructure records inside an application-provided
+ * transaction. Every method call belongs to the transaction opened by
+ * `transaction()`; implementations must not commit independently and must
+ * preserve the documented atomicity and error protocol. Adapter authors can
+ * verify implementations with `@interlock/conformance`.
+ */
 export interface TransactionDriver<Transaction> {
   /**
    * Rolls back for every thrown value. Values used for caller-controlled
@@ -301,7 +340,10 @@ type ContextBinding<Transaction, Actor, Context, Event extends string> = [
       };
     };
 
-/** Maps one application resource and its writes onto a driver transaction. */
+/**
+ * Maps one application resource and its compare-and-swap and related writes
+ * onto the same driver transaction used for Interlock infrastructure records.
+ */
 export type ResourceBinding<
   Transaction,
   Resource,

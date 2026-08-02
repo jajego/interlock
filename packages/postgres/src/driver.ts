@@ -12,6 +12,7 @@ import {
 } from "@interlock/core";
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 
+/** Minimal active `pg` transaction/client surface exposed to bindings. */
 export interface PgTransaction {
   query<Row extends QueryResultRow = QueryResultRow>(
     text: string,
@@ -21,7 +22,9 @@ export interface PgTransaction {
 
 const OUTBOX_BATCH_SIZE = 500;
 
+/** Configuration for Interlock-owned PostgreSQL tables. */
 export interface PostgresDriverOptions {
+  /** Schema containing the applied Interlock migration; defaults to `public`. */
   schema?: string;
 }
 
@@ -84,6 +87,13 @@ function connectionFailure(error: unknown): Error | undefined {
   );
 }
 
+/**
+ * Normalizes recognized PostgreSQL serialization, deadlock, lock-timeout,
+ * cancellation, and connection failures into stable `InterlockError` codes.
+ * `duringCommit` marks connection failures whose commit outcome cannot be
+ * determined; failures known to occur before commit remain ordinary transaction
+ * failures. Recognized causes are retained, including through wrapped errors.
+ */
 export function normalizePostgresError(
   error: unknown,
   duringCommit = false,
@@ -178,6 +188,13 @@ function rowToTransition(row: Record<string, unknown>): TransitionRecord {
   };
 }
 
+/**
+ * PostgreSQL transaction driver backed by a caller-supplied `pg` pool. Apply
+ * `@interlock/postgres/migration.sql` to the configured schema before use. The
+ * driver owns begin/commit/rollback, but every binding query uses the supplied
+ * active transaction handle and must not commit independently. Recognized
+ * PostgreSQL transient failures are normalized to stable Interlock error codes.
+ */
 export class PostgresDriver implements TransactionDriver<PgTransaction> {
   private readonly tables: {
     history: string;

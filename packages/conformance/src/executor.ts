@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import { isInterlockError, type TransactionDriver } from "@interlock/core";
 import { failOperation, type FaultOperation } from "./faults.js";
 
+/**
+ * Isolated, resettable end-to-end fixture consumed by
+ * `verifyExecutorAtomicity()`. Verification injects failures into real writes.
+ */
 export interface ExecutorAtomicityConformance<Transaction> {
   driver: TransactionDriver<Transaction>;
   reset(): Promise<void>;
@@ -15,6 +19,11 @@ export interface ExecutorAtomicityConformance<Transaction> {
   }>;
 }
 
+/**
+ * Executes real transitions with injected history, outbox, and idempotency
+ * completion failures and asserts full rollback. The fixture is reset and
+ * mutated; failed assertions reject. Intended for adapter and binding authors.
+ */
 export async function verifyExecutorAtomicity<Transaction>(
   fixture: ExecutorAtomicityConformance<Transaction>,
 ): Promise<void> {

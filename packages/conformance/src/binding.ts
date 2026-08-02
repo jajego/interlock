@@ -7,6 +7,10 @@ import type {
   VersionToken,
 } from "@interlock/core";
 
+/**
+ * Isolated, resettable application fixture consumed by
+ * `verifyResourceBinding()`. Verification performs real reads and writes.
+ */
 export interface BindingConformance<
   Transaction,
   Resource,
@@ -44,6 +48,11 @@ export interface BindingConformance<
   assertRelated?(): Promise<void>;
 }
 
+/**
+ * Executes resource loading, context, compare-and-swap, related-write, and
+ * hydration checks against a real fixture. It resets and mutates fixture data;
+ * failed assertions reject the returned promise. Intended for binding authors.
+ */
 export async function verifyResourceBinding<
   Transaction,
   Resource,

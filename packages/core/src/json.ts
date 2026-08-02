@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { JsonValue } from "./types.js";
 
+/**
+ * Asserts that a value contains only finite JSON primitives, arrays, and plain
+ * objects. Cycles, `undefined`, non-finite numbers, and class instances fail.
+ */
 export function assertJsonValue(
   value: unknown,
   path = "$",
@@ -91,6 +95,10 @@ export function snapshotJsonValue(value: unknown): JsonValue {
   return visit(value);
 }
 
+/**
+ * Serializes a JSON value with object keys recursively sorted. Use it for
+ * stable fingerprints, not to preserve the source object's property order.
+ */
 export function canonicalJson(value: JsonValue): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -101,6 +109,10 @@ export function canonicalJson(value: JsonValue): string {
     .join(",")}}`;
 }
 
+/**
+ * Returns the lowercase hexadecimal SHA-256 digest of canonical JSON. It is
+ * suitable for deterministic request fingerprints, not password hashing.
+ */
 export function canonicalHash(value: JsonValue): string {
   assertJsonValue(value);
   return createHash("sha256").update(canonicalJson(value)).digest("hex");

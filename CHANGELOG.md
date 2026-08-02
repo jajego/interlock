@@ -27,4 +27,5 @@
   objects; transition history now precedes related writes so immediate foreign
   keys can reference the planned transition inside the same transaction.
 - Replaced the stale root design proposal with maintained alpha architecture
-  documentation and expanded public API hover documentation.
+  documentation and added focused public API hover documentation across the
+  core, PostgreSQL, and conformance packages.

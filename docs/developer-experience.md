@@ -26,7 +26,9 @@ mutation during writes. Tenant and event identity therefore required closure
 state or mutation discriminators. The PostgreSQL example now receives one
 immutable operation at loading, context, primary-write, and related-write
 boundaries. Event builders preserve each event's input and mutation types.
-Transaction-local tenant or RLS settings can run before the primary load.
+Transaction-local tenant or RLS settings can run before the primary load, but a
+setting provides no isolation unless an RLS policy, trigger, or other database
+logic consumes it. The binding must enforce tenant scope on application queries.
 
 ## Prisma application
 

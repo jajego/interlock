@@ -27,6 +27,7 @@ type EventSchema<Event> = Event extends { input: infer SchemaType }
   ? SchemaType
   : undefined;
 
+/** Event-discriminated authoritative request inferred from a lifecycle. */
 export type TransitionRequestFor<
   Events,
   Actor,
@@ -39,6 +40,7 @@ export type TransitionRequestFor<
     } & IdempotencyField<SupportsIdempotency>;
 }[EventName<Events>];
 
+/** Event-discriminated advisory request inferred from a lifecycle. */
 export type AssessmentRequestFor<Events, Actor> = {
   [Event in EventName<Events>]: CommonRequest<Actor> &
     InputField<EventSchema<Events[Event]>> & { event: Event };

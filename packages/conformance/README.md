@@ -35,6 +35,6 @@ operations, and observable snapshots. The package uses Node built-ins and
 `@interlock/core`; no test framework is required. Node.js 22.14+ is supported.
 
 The committed
-[Fastify + Prisma reference application](../../examples/reference-app/README.md)
+[Fastify + Prisma reference application](https://github.com/jajego/interlock/tree/main/examples/reference-app)
 uses real PostgreSQL failure and concurrency tests as an external-consumer
 evaluation; it is not a production starter kit.

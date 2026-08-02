@@ -1,7 +1,12 @@
 import type { TransactionDriver } from "@interlock/core";
 
+/** Persistence operation that can be replaced with an injected test failure. */
 export type FaultOperation = "history" | "outbox" | "idempotency-completion";
 
+/**
+ * Wraps a driver so one selected persistence operation throws the supplied
+ * error. Intended only for deterministic failure and rollback tests.
+ */
 export function failOperation<Transaction>(
   driver: TransactionDriver<Transaction>,
   operation: FaultOperation,
@@ -31,6 +36,10 @@ export function failOperation<Transaction>(
   };
 }
 
+/**
+ * Creates a deterministic one-shot test barrier. Each participant waits until
+ * `size` arrivals release all waiters; the returned barrier is not reusable.
+ */
 export function barrier(size: number): () => Promise<void> {
   let waiting = 0;
   let release: (() => void) | undefined;

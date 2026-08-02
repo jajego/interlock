@@ -5,6 +5,10 @@ import type {
   TransitionRecord,
 } from "@interlock/core";
 
+/**
+ * Isolated, resettable persistence fixture consumed by
+ * `verifyTransactionDriver()`. Verification creates and mutates real records.
+ */
 export interface DriverConformance<Transaction> {
   driver: TransactionDriver<Transaction>;
   reset(): Promise<void>;
@@ -21,6 +25,12 @@ export interface DriverConformance<Transaction> {
   outboxCount(id: string): Promise<number>;
 }
 
+/**
+ * Executes commit, rollback, options, handle-lifetime, history, outbox, and
+ * idempotency checks against the supplied driver fixture. The fixture must be
+ * isolated and resettable; failed assertions reject. Intended for adapter
+ * authors.
+ */
 export async function verifyTransactionDriver<Transaction>(
   fixture: DriverConformance<Transaction>,
 ): Promise<void> {
