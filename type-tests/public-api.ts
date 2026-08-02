@@ -4,13 +4,14 @@ import {
   defineLifecycle,
   noInput,
   primaryRowOnly,
+  type BindingFor,
+  type ClientFor,
   type InputSchema,
   type InterlockClient,
   type MutationMap,
   type PublicDenial,
   type ResourceBinding,
   type TransactionDriver,
-  type VersionToken,
 } from "../packages/core/src/index.js";
 // @ts-expect-error executor-only JSON snapshotting is not public
 import { snapshotJsonValue } from "../packages/core/src/index.js";
@@ -23,7 +24,7 @@ void accidentalExport;
 interface Resource {
   id: string;
   state: string;
-  version: VersionToken;
+  version: string;
 }
 interface Actor {
   id: string;
@@ -50,7 +51,10 @@ const lifecycle = defineLifecycle<Resource, Actor, Context>()({
     approve: event(noInput, {
       from: ["open"],
       to: "approved",
-      mutate: ({ actor }) => ({ approvedBy: actor.id }),
+      mutate: ({ actor, operation }) => ({
+        approvedBy: actor.id,
+        correlationId: operation.correlationId,
+      }),
     }),
     reject: event(reasonSchema, {
       from: ["open"],
@@ -61,10 +65,9 @@ const lifecycle = defineLifecycle<Resource, Actor, Context>()({
   },
 });
 
-type Mutations = MutationMap<typeof lifecycle.events>;
 declare const driver: TransactionDriver<object>;
 
-const binding: ResourceBinding<object, Resource, Actor, Context, Mutations> = {
+const binding: BindingFor<object, typeof lifecycle> = {
   loadPrimary: async (_transaction, operation) => {
     void operation.actor.tenantId;
     void operation.id;
@@ -105,6 +108,8 @@ const binding: ResourceBinding<object, Resource, Actor, Context, Mutations> = {
 
 const client = createInterlock({ lifecycle, binding, driver });
 const named: InterlockClient<Resource, Actor, typeof lifecycle.events> = client;
+const derived: ClientFor<typeof lifecycle> = client;
+void derived;
 
 named.transition({
   id: "item-1",
@@ -169,6 +174,60 @@ const minimalBinding: ResourceBinding<
   consistency: primaryRowOnly,
 };
 void minimalBinding;
+const minimalClient = createInterlock({
+  lifecycle: minimalLifecycle,
+  binding: minimalBinding,
+  driver,
+});
+minimalClient.transition({
+  id: "item-1",
+  event: "close",
+  expectedVersion: "1",
+});
+minimalClient.transition({
+  id: "item-1",
+  event: "close",
+  expectedVersion: "1",
+  // @ts-expect-error lifecycle does not define an idempotency fingerprint
+  idempotency: { key: "close-1" },
+});
+
+const idempotentLifecycle = defineLifecycle<Resource>()({
+  name: "idempotent",
+  states: ["open", "closed"],
+  history: { resourceType: "item" },
+  idempotency: {
+    fingerprint: ({ resourceId, event }) => `${resourceId}:${event}`,
+  },
+  events: {
+    close: defineEvent<Resource>()({ from: ["open"], to: "closed" }),
+  },
+});
+declare const idempotentBinding: BindingFor<object, typeof idempotentLifecycle>;
+const idempotentClient = createInterlock({
+  lifecycle: idempotentLifecycle,
+  binding: idempotentBinding,
+  driver,
+});
+idempotentClient.transition({
+  id: "item-1",
+  event: "close",
+  expectedVersion: "1",
+  idempotency: { key: "close-1" },
+});
+
+defineLifecycle<Resource>()({
+  name: "invalid-state",
+  states: ["open", "closed"],
+  history: { resourceType: "item" },
+  events: {
+    // @ts-expect-error event source must be a declared lifecycle state
+    close: defineEvent<Resource>()({
+      from: ["typo"],
+      to: "closed",
+    }),
+  },
+});
 
 const safeDenial: PublicDenial = {
   source: "guard",

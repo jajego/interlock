@@ -4,11 +4,20 @@ Apply `@interlock/postgres/migration.sql`, keep application tables application
 owned, and implement a binding whose conditional update checks both state and
 version with `RETURNING`. Use `TEST_DATABASE_URL` for integration tests.
 
+Resource IDs must be globally unique within each lifecycle. If application IDs
+are tenant-local, namespace them before passing them to Interlock or use
+globally unique primary keys; the current persistence schema has no tenant scope
+column.
+
 The same `PgTransaction` must reach application loads, context queries, primary
 and related writes, idempotency, history, and outbox operations. The bundled
 driver rejects use of its scoped handle after callback completion. Run the
 public conformance functions against custom bindings or transaction hosts before
 advertising compatibility.
+
+Raw `pg` is the first-party path. ORMs that own their transaction handles need a
+custom `TransactionDriver`; the Prisma spike is a copyable proof, not a drop-in
+adapter.
 
 Prefer a conditional `UPDATE ... RETURNING` that returns the committed resource
 from `applyPrimary()`. `hydrateBeforeCommit()` is available when joins,

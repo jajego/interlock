@@ -6,6 +6,15 @@ version conflict, a related write, append-only history, and an outbox row.
 
 ```sh
 docker compose up -d --wait
+export TEST_DATABASE_URL="postgresql://interlock:interlock@localhost:54329/interlock"
+pnpm build
+pnpm --filter @interlock/example-postgres-node run setup
+pnpm --filter @interlock/example-postgres-node run start
+```
+
+PowerShell:
+
+```powershell
 $env:TEST_DATABASE_URL="postgresql://interlock:interlock@localhost:54329/interlock"
 pnpm build
 pnpm --filter @interlock/example-postgres-node run setup

@@ -6,6 +6,8 @@ export {
 export {
   createInterlock,
   type AssessmentRequestFor,
+  type BindingFor,
+  type ClientFor,
   type InterlockClient,
   type TransitionRequestFor,
 } from "./executor.js";
@@ -17,6 +19,7 @@ export {
   type AssessmentArgs,
   type EventDefinition,
   type EventBuilder,
+  type IdempotencyConfiguration,
   type LifecycleDefinition,
   type Lifecycle,
   type MutationMap,

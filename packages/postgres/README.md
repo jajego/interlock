@@ -23,24 +23,22 @@ const sql = await readFile(
   fileURLToPath(import.meta.resolve("@interlock/postgres/migration.sql")),
   "utf8",
 );
-const client = await pool.connect();
+const migrationPool = new Pool({ connectionString: process.env.DATABASE_URL });
+const client = await migrationPool.connect();
 try {
-  await client.query("BEGIN");
-  await client.query('SET LOCAL search_path = "interlock"');
-  await client.query(
-    sql.replace(/^BEGIN;\s*/m, "").replace(/COMMIT;\s*$/m, ""),
-  );
-  await client.query("COMMIT");
+  await client.query('SET search_path = "interlock"');
+  await client.query(sql);
 } finally {
   client.release();
+  await migrationPool.end();
 }
 ```
 
 The migration targets the transaction-local active schema and is intended for a
-clean installation. Runtime SQL safely qualifies the configured schema; it does
-not depend on a shared pool's `search_path`. Idempotent transitions use
-`read-committed`; the executor rejects higher isolation levels rather than
-claiming an unproved algorithm.
+clean installation. Run it on a dedicated migration connection. Runtime SQL
+safely qualifies the configured schema; it does not depend on a shared pool's
+`search_path`. Idempotent transitions use `read-committed`; the executor rejects
+higher isolation levels rather than claiming an unproved algorithm.
 
 This package guarantees atomic insertion, not outbox delivery. The
 transition-history table is append-only by protocol; applications that need

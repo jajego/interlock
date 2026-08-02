@@ -9,11 +9,10 @@ import {
   InterlockError,
   noInput,
   primaryRowOnly,
+  type BindingFor,
   type IdempotencyClaim,
   type IdempotencyClaimResult,
   type OutboxInsert,
-  type MutationMap,
-  type ResourceBinding,
   type TransactionDriver,
   type TransactionOptions,
   type TransitionRecord,
@@ -26,7 +25,7 @@ type Transaction = Prisma.TransactionClient;
 type Resource = {
   id: string;
   state: string;
-  version: VersionToken;
+  version: string;
 };
 
 const lifecycle = defineLifecycle<Resource>()({
@@ -189,13 +188,7 @@ class PrismaDriver implements TransactionDriver<Transaction> {
 }
 
 const pids: number[] = [];
-const binding: ResourceBinding<
-  Transaction,
-  Resource,
-  undefined,
-  undefined,
-  MutationMap<typeof lifecycle.events>
-> = {
+const binding: BindingFor<Transaction, typeof lifecycle> = {
   loadPrimary: async (transaction, operation) => {
     const pid = await transaction.$queryRaw<Array<{ pid: number }>>`
       SELECT pg_backend_pid() pid
@@ -208,7 +201,7 @@ const binding: ResourceBinding<
       ? {
           id: row.id,
           state: row.state,
-          version: String(row.version) as VersionToken,
+          version: String(row.version),
         }
       : null;
   },
@@ -237,7 +230,7 @@ const binding: ResourceBinding<
       resource: {
         id: row.id,
         state: row.state,
-        version: String(row.version) as VersionToken,
+        version: String(row.version),
       },
     };
   },

@@ -30,6 +30,8 @@ The public surface includes `defineLifecycle`, `createInterlock`, typed
 `assess()` and `transition()` calls, stable `InterlockError` codes,
 version-token helpers, and canonical JSON hashing. Applications supply
 persistence through a `ResourceBinding`; no ORM or global registry is included.
+Use `BindingFor<Transaction, typeof lifecycle>` for separately declared bindings
+and `ClientFor<typeof lifecycle>` at service boundaries.
 
 `transition()` validates runtime input, rechecks policy inside the transaction,
 applies the primary compare-and-swap update, and writes history, outbox, and

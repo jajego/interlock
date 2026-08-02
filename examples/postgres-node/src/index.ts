@@ -5,11 +5,9 @@ import {
   defineLifecycle,
   deny,
   allow,
+  type BindingFor,
   type InputSchema,
-  type MutationMap,
-  type ResourceBinding,
   type TransactionDriver,
-  type VersionToken,
 } from "@interlock/core";
 import { PostgresDriver, type PgTransaction } from "@interlock/postgres";
 import { Pool } from "pg";
@@ -19,7 +17,7 @@ interface Application {
   id: string;
   ownerId: string;
   state: string;
-  version: VersionToken;
+  version: string;
   decisionNote: string | null;
 }
 interface Actor {
@@ -125,16 +123,13 @@ const mapApplication = (row: Record<string, unknown>): Application => ({
   id: String(row.id),
   ownerId: String(row.owner_id),
   state: String(row.state),
-  version: String(row.version) as VersionToken,
+  version: String(row.version),
   decisionNote: row.decision_note == null ? null : String(row.decision_note),
 });
 
-export const applicationBinding: ResourceBinding<
+export const applicationBinding: BindingFor<
   PgTransaction,
-  Application,
-  Actor,
-  Context,
-  MutationMap<typeof applicationLifecycle.events>
+  typeof applicationLifecycle
 > = {
   transactionOptions: ({ mode }) =>
     mode === "advisory"
@@ -237,7 +232,7 @@ async function main() {
       event: "approve" as const,
       input: { note: "Ready" },
       actor: { id: "reviewer", permissions: ["applications:approve"] },
-      expectedVersion: "2" as VersionToken,
+      expectedVersion: "2",
       idempotency: { key: "example-approve" },
     };
     console.log("assessment", await applications.assess(request));

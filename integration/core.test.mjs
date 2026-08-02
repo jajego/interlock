@@ -103,6 +103,35 @@ test("definitions reject duplicate states and guard names", () => {
   );
 });
 
+test("camel-case events are valid and definition errors identify the field", () => {
+  const lifecycle = defineLifecycle()({
+    name: "item",
+    states: ["open", "under_review"],
+    history: { resourceType: "item" },
+    events: {
+      submitForReview: { from: ["open"], to: "under_review" },
+    },
+  });
+  assert.equal(lifecycle.getEvent("submitForReview").to, "under_review");
+
+  for (const [event, message] of [
+    [{ from: [], to: "under_review" }, "at least one source state"],
+    [{ from: ["missing"], to: "under_review" }, "unknown source state"],
+    [{ from: ["open"], to: "missing" }, "unknown target state"],
+    [{ from: ["open", "open"], to: "under_review" }, "duplicate source"],
+  ])
+    assert.throws(
+      () =>
+        defineLifecycle()({
+          name: "item",
+          states: ["open", "under_review"],
+          history: { resourceType: "item" },
+          events: { move: event },
+        }),
+      (error) => isInterlockError(error) && error.message.includes(message),
+    );
+});
+
 test("validated definitions are stable after caller mutation", () => {
   const definition = {
     name: "item",
@@ -281,7 +310,7 @@ test("lifecycle definitions reject malformed public fields", () => {
     { ...valid(), definitionVersion: "" },
     { ...valid(), idempotency: { fingerprint: true } },
     { ...valid(), events: null },
-    { ...valid(), events: { Bad: valid().events.move } },
+    { ...valid(), events: { "": valid().events.move } },
     { ...valid(), events: { move: { ...valid().events.move, from: [] } } },
     { ...valid(), events: { move: { ...valid().events.move, to: "missing" } } },
     {
@@ -487,6 +516,12 @@ test("operation context reaches loading, context, and writes immutably", async (
       seen.push(["context", operation]);
       return { tenantId: operation.actor.tenantId };
     },
+    mutate: ({ operation }) => {
+      assert.equal(operation.correlationId, "correlation-1");
+      assert.equal(operation.metadata.source, "api");
+      assert.equal(Object.isFrozen(operation), true);
+      return {};
+    },
     observeApply: (args) => {
       seen.push(["primary", args.operation]);
       assert.equal(args.operation.event, "move");
@@ -523,7 +558,12 @@ test("ordinary transitions default options, context, and mutation", async () => 
     },
     observeApply: (args) => assert.equal(args.operation.mutation, undefined),
   });
-  const result = await fixture.subject.transition(transitionRequest);
+  const result = await fixture.subject.transition({
+    id: "item-1",
+    event: "move",
+    expectedVersion: "1",
+    idempotency: { key: "key" },
+  });
   assert.equal(result.status, "committed");
   assert.deepEqual(options, {});
 });

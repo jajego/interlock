@@ -14,3 +14,6 @@
   event-correlated mutations, safe transaction and context defaults, singular
   structured denials, asynchronous planning support, a named client type,
   curated exports, and schema-qualified PostgreSQL tables.
+- Made actor and idempotency request fields reflect lifecycle capabilities,
+  accepted ordinary version strings from bindings, constrained event states, and
+  added operation-aware projections plus derived binding/client types.

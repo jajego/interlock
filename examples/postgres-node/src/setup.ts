@@ -15,11 +15,9 @@ try {
     new URL("../schema.sql", import.meta.url),
     "utf8",
   );
+  await client.query("SET search_path = interlock_example");
+  await client.query(migration);
   await client.query("BEGIN");
-  await client.query("SET LOCAL search_path = interlock_example");
-  await client.query(
-    migration.replace(/^BEGIN;\s*/m, "").replace(/COMMIT;\s*$/m, ""),
-  );
   await client.query(schema);
   await client.query(
     "INSERT INTO applications (id, owner_id, state) VALUES ('example', 'owner', 'under_review')",
