@@ -62,7 +62,7 @@ export interface PublicDenial {
   publicMessage?: string;
 }
 export type Decision =
-  { allowed: true } | { allowed: false; denial: InternalDenial };
+  boolean | { allowed: true } | { allowed: false; denial: InternalDenial };
 export const allow = (): Decision => ({ allowed: true });
 export const deny = (denial: InternalDenial): Decision => ({
   allowed: false,
@@ -157,7 +157,7 @@ export interface TransactionDriver<Transaction> {
   insertTransition(
     transaction: Transaction,
     transition: TransitionRecord,
-  ): Promise<TransitionRecord>;
+  ): Promise<void>;
   insertOutbox(
     transaction: Transaction,
     messages: readonly OutboxInsert[],

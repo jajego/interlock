@@ -114,7 +114,10 @@ function rowToTransition(row: Record<string, unknown>): TransitionRecord {
     toState: String(row.to_state),
     previousVersion: String(row.previous_version) as VersionToken,
     nextVersion: String(row.next_version) as VersionToken,
-    occurredAt: new Date(String(row.occurred_at)),
+    occurredAt:
+      row.occurred_at instanceof Date
+        ? new Date(row.occurred_at.getTime())
+        : new Date(String(row.occurred_at)),
     ...(row.actor_type == null ? {} : { actorType: String(row.actor_type) }),
     ...(row.actor_id == null ? {} : { actorId: String(row.actor_id) }),
     ...(row.audit_data == null
@@ -257,7 +260,7 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
   async insertTransition(
     transaction: PgTransaction,
     value: TransitionRecord,
-  ): Promise<TransitionRecord> {
+  ): Promise<void> {
     await transaction.query(
       `INSERT INTO interlock_transition_history
        (id, lifecycle, resource_type, resource_id, event, from_state, to_state, previous_version, next_version, actor_type, actor_id, audit_data, metadata, correlation_id, causation_id, idempotency_key, request_fingerprint, definition_version, occurred_at)
@@ -284,7 +287,6 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
         value.occurredAt,
       ],
     );
-    return value;
   }
 
   async insertOutbox(

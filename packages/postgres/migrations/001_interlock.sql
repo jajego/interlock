@@ -1,3 +1,7 @@
+-- Initializes Interlock's current schema in the active schema/search_path.
+-- This is not an automatic upgrade for older incompatible Interlock schemas.
+BEGIN;
+
 CREATE TABLE IF NOT EXISTS interlock_transition_history (
   id TEXT PRIMARY KEY,
   lifecycle TEXT NOT NULL,
@@ -19,6 +23,9 @@ CREATE TABLE IF NOT EXISTS interlock_transition_history (
   definition_version TEXT,
   occurred_at TIMESTAMPTZ NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS interlock_history_resource_version_idx
+  ON interlock_transition_history (lifecycle, resource_id, next_version);
 
 CREATE INDEX IF NOT EXISTS interlock_history_resource_idx
   ON interlock_transition_history (lifecycle, resource_id, occurred_at DESC);
@@ -50,3 +57,5 @@ CREATE TABLE IF NOT EXISTS interlock_outbox (
 
 CREATE INDEX IF NOT EXISTS interlock_outbox_pending_idx
   ON interlock_outbox (created_at, id) WHERE published_at IS NULL;
+
+COMMIT;

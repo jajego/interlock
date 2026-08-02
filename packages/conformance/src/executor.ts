@@ -24,6 +24,7 @@ export async function verifyExecutorAtomicity<Transaction>(
     "idempotency-completion",
   ] as const satisfies readonly FaultOperation[]) {
     await fixture.reset();
+    const baseline = await fixture.snapshot();
     const driver = failOperation(
       fixture.driver,
       operation,
@@ -38,12 +39,6 @@ export async function verifyExecutorAtomicity<Transaction>(
       fixture.transition(driver),
       (error) => isInterlockError(error) && error.code === expectedCode,
     );
-    assert.deepEqual(await fixture.snapshot(), {
-      primaryVersion: "2",
-      related: 0,
-      history: 0,
-      outbox: 0,
-      idempotency: 0,
-    });
+    assert.deepEqual(await fixture.snapshot(), baseline);
   }
 }

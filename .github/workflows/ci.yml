@@ -2,8 +2,21 @@ name: CI
 on: [push, pull_request]
 permissions: { contents: read }
 jobs:
+  node-24:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.9.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 24, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - run: node --test integration/core.test.mjs
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     services:
       postgres:
         image: postgres:16-alpine
@@ -29,6 +42,7 @@ jobs:
       - run: pnpm format
       - run: pnpm lint
       - run: pnpm check
+      - run: node --test integration/core.test.mjs
       - run: pnpm test:postgres
       - run: pnpm pack:check
       - run: pnpm --filter @interlock/prisma-postgres-spike generate

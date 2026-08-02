@@ -126,6 +126,7 @@ test("validated definitions snapshot caller-owned input parsers", async () => {
 function executorFixture(options = {}) {
   const order = [];
   let inserted;
+  let claimed;
   const driver = {
     transaction: (operation, transactionOptions) => {
       options.observeTransactionOptions?.(transactionOptions);
@@ -133,13 +134,14 @@ function executorFixture(options = {}) {
     },
     claimIdempotency: async (_transaction, claim) => {
       order.push("claim");
+      claimed = claim;
       return options.claim ?? { status: "claimed", claim };
     },
     completeIdempotency: async () => order.push("complete"),
     insertTransition: async (_transaction, value) => {
       order.push("history");
       inserted = value;
-      return value;
+      return options.insertTransition?.(value);
     },
     insertOutbox: async () => order.push("outbox"),
   };
@@ -148,9 +150,9 @@ function executorFixture(options = {}) {
     states: ["a", "b"],
     history: {
       resourceType: "item",
-      metadata: () => {
+      metadata: (args) => {
         order.push("metadata");
-        return options.metadata ?? {};
+        return options.metadataCallback?.(args) ?? options.metadata ?? {};
       },
     },
     idempotency: { fingerprint: () => "fingerprint" },
@@ -158,6 +160,7 @@ function executorFixture(options = {}) {
       move: {
         from: ["a"],
         to: "b",
+        input: options.input,
         authorize: (args) => {
           order.push("authorize");
           return options.authorize?.(args) ?? { allowed: true };
@@ -167,6 +170,7 @@ function executorFixture(options = {}) {
           order.push("mutate");
           return options.mutate?.(args) ?? {};
         },
+        audit: options.audit,
         outbox: options.outbox,
       },
     },
@@ -194,6 +198,7 @@ function executorFixture(options = {}) {
         }
       );
     },
+    hydrateBeforeCommit: options.hydrate,
     contextFactory: { create: () => ({}) },
     consistency: () => ({ strategy: "none", notes: "fixture" }),
   };
@@ -205,13 +210,20 @@ function executorFixture(options = {}) {
     lifecycle: defineLifecycle()(definition),
     driver,
     binding,
-    now: () => {
-      order.push("clock");
-      return clocks.shift();
-    },
+    now:
+      options.now ??
+      (() => {
+        order.push("clock");
+        return clocks.shift();
+      }),
     ids: options.ids ?? (() => "transition-1"),
   });
-  return { subject, order, getTransition: () => inserted };
+  return {
+    subject,
+    order,
+    getTransition: () => inserted,
+    getClaim: () => claimed,
+  };
 }
 
 const transitionRequest = {
@@ -237,6 +249,81 @@ test("transition clock is allocated after authoritative assessment", async () =>
     fixture.getTransition().occurredAt.toISOString(),
     "2026-01-01T00:00:01.000Z",
   );
+});
+
+test("clock providers must return finite Dates", async () => {
+  for (const value of [new Date("invalid"), "not-a-date"]) {
+    const fixture = executorFixture({ now: () => value });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+    );
+    assert.equal(fixture.order.includes("claim"), false);
+    assert.equal(fixture.order.includes("apply"), false);
+  }
+});
+
+test("clock provider objects are copied at each boundary", async () => {
+  const shared = new Date("2026-01-01T00:00:00.000Z");
+  const fixture = executorFixture({ now: () => shared });
+  const result = await fixture.subject.transition(transitionRequest);
+  assert.equal(result.status, "committed");
+  assert.notEqual(fixture.getClaim().createdAt, shared);
+  assert.notEqual(fixture.getTransition().occurredAt, shared);
+  assert.notEqual(
+    fixture.getClaim().createdAt,
+    fixture.getTransition().occurredAt,
+  );
+});
+
+test("clock mutation in projections fails before application writes", async () => {
+  const mutations = {
+    mutate: {
+      mutate: ({ clock }) => {
+        clock.occurredAt.setUTCFullYear(2030);
+        return {};
+      },
+    },
+    audit: {
+      audit: ({ clock }) => {
+        clock.occurredAt.setUTCFullYear(2030);
+        return {};
+      },
+    },
+    outbox: {
+      outbox: ({ clock }) => {
+        clock.occurredAt.setUTCFullYear(2030);
+        return [];
+      },
+    },
+    metadata: (() => {
+      let occurredAt;
+      return {
+        mutate: ({ clock }) => {
+          occurredAt = clock.occurredAt;
+          return {};
+        },
+        metadataCallback: () => {
+          occurredAt.setUTCFullYear(2030);
+          return {};
+        },
+      };
+    })(),
+  };
+  for (const [projection, options] of Object.entries(mutations)) {
+    const fixture = executorFixture(options);
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+      projection,
+    );
+    assert.equal(fixture.order.includes("apply"), false, projection);
+    assert.equal(fixture.order.includes("history"), false, projection);
+  }
 });
 
 test("history projections and serialization finish before application writes", async () => {
@@ -371,6 +458,191 @@ test("an applied resource must match the requested identity, state, and version"
     );
     assert.equal(fixture.order.includes("history"), false);
   }
+});
+
+test("idempotent transitions reject unsupported isolation before transaction", async () => {
+  for (const isolation of ["repeatable-read", "serializable"]) {
+    const fixture = executorFixture({ transactionOptions: { isolation } });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DRIVER_UNSUPPORTED",
+    );
+    assert.equal(fixture.getClaim(), undefined);
+  }
+});
+
+test("hydrateBeforeCommit must preserve identity, state, and version", async () => {
+  for (const resource of [
+    { id: "other", state: "b", version: "2" },
+    { id: "item-1", state: "a", version: "2" },
+    { id: "item-1", state: "b", version: "1" },
+    {},
+  ]) {
+    const fixture = executorFixture({ hydrate: async () => resource });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+    );
+  }
+});
+
+test("hydration failures preserve their cause", async () => {
+  const cause = new Error("hydrate failed");
+  const fixture = executorFixture({
+    hydrate: async () => {
+      throw cause;
+    },
+  });
+  await assert.rejects(
+    fixture.subject.transition(transitionRequest),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_PERSISTENCE_FAILED" &&
+      error.cause === cause,
+  );
+});
+
+test("malformed parser, decision, and binding results fail with protocol errors", async () => {
+  const cases = [
+    executorFixture({
+      input: { parse: () => ({ success: true }) },
+    }).subject.transition({
+      ...transitionRequest,
+      input: {},
+    }),
+    executorFixture({
+      authorize: () => ({ allowed: "yes" }),
+    }).subject.transition(transitionRequest),
+    executorFixture({ applied: { status: "weird" } }).subject.transition(
+      transitionRequest,
+    ),
+    executorFixture({
+      applied: { status: "conflict", actual: { state: "a", version: "bad" } },
+    }).subject.transition(transitionRequest),
+  ];
+  const expected = [
+    "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+    "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+    "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+    "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+  ];
+  for (let index = 0; index < cases.length; index += 1)
+    await assert.rejects(
+      cases[index],
+      (error) => isInterlockError(error) && error.code === expected[index],
+    );
+});
+
+test("unsupported Standard Schema versions are rejected at construction", () => {
+  assert.throws(
+    () =>
+      defineLifecycle()({
+        name: "standard",
+        states: ["a", "b"],
+        history: { resourceType: "item" },
+        events: {
+          move: {
+            from: ["a"],
+            to: "b",
+            input: {
+              "~standard": { version: 2, validate: () => ({ value: {} }) },
+            },
+            mutate: () => ({}),
+          },
+        },
+      }),
+    (error) =>
+      isInterlockError(error) && error.code === "INTERLOCK_DEFINITION_INVALID",
+  );
+});
+
+test("malformed lifecycle, binding, and driver construction fails stably", () => {
+  assert.throws(
+    () => defineLifecycle()(null),
+    (error) =>
+      isInterlockError(error) && error.code === "INTERLOCK_DEFINITION_INVALID",
+  );
+  const fixture = executorFixture();
+  for (const replacement of [{ driver: {} }, { binding: {} }])
+    assert.throws(
+      () =>
+        createInterlock({
+          lifecycle: defineLifecycle()({
+            name: "valid",
+            states: ["a", "b"],
+            history: { resourceType: "item" },
+            events: { move: { from: ["a"], to: "b", mutate: () => ({}) } },
+          }),
+          driver: replacement.driver ?? fixture,
+          binding: replacement.binding ?? {},
+        }),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DEFINITION_INVALID",
+    );
+});
+
+const validDuplicate = {
+  id: "original-transition",
+  lifecycle: "item",
+  resourceType: "item",
+  resourceId: "item-1",
+  event: "move",
+  fromState: "a",
+  toState: "b",
+  previousVersion: "1",
+  nextVersion: "2",
+  idempotencyKey: "key",
+  requestFingerprint: "fingerprint",
+  occurredAt: new Date("2026-01-01T00:00:00.000Z"),
+};
+
+test("duplicate records must match the normalized request", async () => {
+  for (const transition of [
+    { ...validDuplicate, lifecycle: "other" },
+    { ...validDuplicate, resourceId: "other" },
+    { ...validDuplicate, event: "other" },
+    { ...validDuplicate, idempotencyKey: "other" },
+    { ...validDuplicate, requestFingerprint: "other" },
+    { ...validDuplicate, previousVersion: "bad" },
+    { ...validDuplicate, occurredAt: new Date("invalid") },
+    { ...validDuplicate, id: "" },
+  ]) {
+    const fixture = executorFixture({
+      claim: { status: "duplicate", transition },
+    });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) =>
+        isInterlockError(error) &&
+        error.code === "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+    );
+    assert.equal(fixture.order.includes("authorize"), false);
+  }
+});
+
+test("valid duplicates skip policy and canonical history cannot be substituted", async () => {
+  const duplicate = executorFixture({
+    claim: { status: "duplicate", transition: validDuplicate },
+  });
+  const replay = await duplicate.subject.transition(transitionRequest);
+  assert.equal(replay.status, "committed");
+  assert.equal(replay.duplicate, true);
+  assert.equal(duplicate.order.includes("authorize"), false);
+
+  const inserted = executorFixture({
+    insertTransition: (value) => {
+      value.id = "driver-substitute";
+      return { ...value, id: "returned-substitute" };
+    },
+  });
+  const committed = await inserted.subject.transition(transitionRequest);
+  assert.equal(committed.status, "committed");
+  assert.equal(committed.transition.id, "transition-1");
 });
 
 test("cyclic outbox data fails with a typed error before writes", async () => {

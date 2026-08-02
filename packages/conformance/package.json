@@ -6,13 +6,13 @@
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jajego/protolife.git",
+    "url": "git+https://github.com/jajego/interlock.git",
     "directory": "packages/conformance"
   },
   "bugs": {
-    "url": "https://github.com/jajego/protolife/issues"
+    "url": "https://github.com/jajego/interlock/issues"
   },
-  "homepage": "https://github.com/jajego/protolife#readme",
+  "homepage": "https://github.com/jajego/interlock#readme",
   "keywords": [
     "postgresql",
     "conformance",

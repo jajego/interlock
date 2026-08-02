@@ -60,6 +60,31 @@ async function resetApplication(pool) {
   );
 }
 
+test(
+  "migration installs the complete schema atomically on an empty database",
+  { skip },
+  async () => {
+    const pool = new Pool({ connectionString: url });
+    try {
+      await pool.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public");
+      await pool.query(migration);
+      const result = await pool.query(`SELECT
+      to_regclass('interlock_transition_history') IS NOT NULL AS history,
+      to_regclass('interlock_idempotency') IS NOT NULL AS idempotency,
+      to_regclass('interlock_outbox') IS NOT NULL AS outbox,
+      to_regclass('interlock_history_resource_version_idx') IS NOT NULL AS version_index`);
+      assert.deepEqual(result.rows[0], {
+        history: true,
+        idempotency: true,
+        outbox: true,
+        version_index: true,
+      });
+    } finally {
+      await pool.end();
+    }
+  },
+);
+
 const reviewer = {
   id: "reviewer",
   permissions: ["applications:approve", "applications:reject"],
@@ -83,8 +108,13 @@ test(
       const replay = await applications.transition(request);
       assert.equal(first.status, "committed");
       assert.equal(replay.status, "committed");
-      if (first.status === "committed" && replay.status === "committed")
+      if (first.status === "committed" && replay.status === "committed") {
         assert.equal(first.transition.id, replay.transition.id);
+        assert.equal(
+          first.transition.occurredAt.getTime(),
+          replay.transition.occurredAt.getTime(),
+        );
+      }
       const counts = await pool.query(`SELECT
       (SELECT count(*) FROM application_decisions)::int decisions,
       (SELECT count(*) FROM interlock_transition_history)::int history,
@@ -326,7 +356,9 @@ test(
         fromState: "under_review",
         toState: "approved",
         expectedVersion: "2",
+        staleVersion: "1",
         nextVersion: "3",
+        invalidSourceState: "approved",
         mutation: { decisionNote: "verified" },
         advisoryOptions: { isolation: "read-committed", readOnly: true },
         authoritativeOptions: { isolation: "read-committed" },
@@ -678,7 +710,8 @@ test(
         }),
         (error) =>
           isInterlockError(error) &&
-          error.code === "INTERLOCK_TRANSACTION_FAILED",
+          error.code === "INTERLOCK_PERSISTENCE_FAILED" &&
+          error.cause?.message === "injected hydration failure",
       );
       const result = await pool.query(`SELECT
       (SELECT version::text FROM applications WHERE id = 'a1') version,
@@ -698,6 +731,93 @@ test(
     }
   },
 );
+
+test(
+  "higher isolation idempotency is rejected before PostgreSQL writes",
+  { skip },
+  async () => {
+    const { pool } = await fixture();
+    try {
+      for (const isolation of ["repeatable-read", "serializable"]) {
+        const applications = createInterlock({
+          lifecycle: applicationLifecycle,
+          driver: new PostgresDriver(pool),
+          binding: {
+            ...applicationBinding,
+            transactionOptions: () => ({ isolation }),
+          },
+        });
+        await assert.rejects(
+          applications.transition({
+            id: "a1",
+            event: "approve",
+            input: {},
+            actor: reviewer,
+            expectedVersion: "2",
+            idempotency: { key: isolation },
+          }),
+          (error) =>
+            isInterlockError(error) &&
+            error.code === "INTERLOCK_DRIVER_UNSUPPORTED",
+        );
+        const count = await pool.query(
+          "SELECT count(*)::int count FROM interlock_idempotency",
+        );
+        assert.equal(count.rows[0].count, 0);
+      }
+    } finally {
+      await pool.end();
+    }
+  },
+);
+
+test("invalid hydrated resources roll back every write", { skip }, async () => {
+  const { pool } = await fixture();
+  try {
+    for (const resource of [
+      { id: "wrong", state: "approved", version: "3" },
+      { id: "a1", state: "under_review", version: "3" },
+      { id: "a1", state: "approved", version: "2" },
+    ]) {
+      const applications = createInterlock({
+        lifecycle: applicationLifecycle,
+        driver: new PostgresDriver(pool),
+        binding: {
+          ...applicationBinding,
+          hydrateBeforeCommit: async () => resource,
+        },
+      });
+      await assert.rejects(
+        applications.transition({
+          id: "a1",
+          event: "approve",
+          input: {},
+          actor: reviewer,
+          expectedVersion: "2",
+          idempotency: { key: "invalid-hydration" },
+        }),
+        (error) =>
+          isInterlockError(error) &&
+          error.code === "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+      );
+      const result = await pool.query(`SELECT
+          (SELECT version::text FROM applications WHERE id = 'a1') version,
+          (SELECT count(*)::int FROM application_decisions) related,
+          (SELECT count(*)::int FROM interlock_transition_history) history,
+          (SELECT count(*)::int FROM interlock_outbox) outbox,
+          (SELECT count(*)::int FROM interlock_idempotency) idempotency`);
+      assert.deepEqual(result.rows[0], {
+        version: "2",
+        related: 0,
+        history: 0,
+        outbox: 0,
+        idempotency: 0,
+      });
+    }
+  } finally {
+    await pool.end();
+  }
+});
 
 test(
   "connection loss during execution rolls back the transition",

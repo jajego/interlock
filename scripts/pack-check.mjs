@@ -3,9 +3,11 @@ import { execFileSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
+  copyFileSync,
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,8 +49,7 @@ function filesBelow(directory, prefix = "") {
 function expectedFiles(name) {
   const files = new Set(["LICENSE", "README.md", "package.json"]);
   for (const module of packages[name])
-    for (const suffix of ["d.ts", "d.ts.map", "js", "js.map"])
-      files.add(`dist/${module}.${suffix}`);
+    for (const suffix of ["d.ts", "js"]) files.add(`dist/${module}.${suffix}`);
   if (name === "postgres") files.add("migrations/001_interlock.sql");
   return [...files].sort();
 }
@@ -76,6 +77,10 @@ try {
     .filter((name) => name.endsWith(".tgz"))
     .map((name) => join(packs, name));
   assert.equal(tarballs.length, 3);
+  for (const tarball of tarballs)
+    process.stdout.write(
+      `${tarball.slice(packs.length + 1)}: ${statSync(tarball).size} bytes\n`,
+    );
   writeFileSync(
     join(temporary, "package.json"),
     JSON.stringify({
@@ -91,8 +96,9 @@ try {
         pg: "^8.16.3",
       },
       devDependencies: {
-        "@types/pg": "^8.15.5",
-        typescript: "^5.9.2",
+        "@types/node": "20.5.9",
+        "@types/pg": "8.10.2",
+        typescript: "5.0.4",
       },
     }),
   );
@@ -106,11 +112,21 @@ try {
   });
   writeFileSync(
     join(temporary, "verify.mjs"),
-    'await Promise.all([import("@interlock/core"), import("@interlock/postgres"), import("@interlock/conformance")]);\n',
+    `import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+await Promise.all([import("@interlock/core"), import("@interlock/postgres"), import("@interlock/conformance")]);
+const migration = await readFile(fileURLToPath(import.meta.resolve("@interlock/postgres/migration.sql")), "utf8");
+assert.match(migration, /CREATE TABLE IF NOT EXISTS interlock_transition_history/);
+`,
   );
   writeFileSync(
     join(temporary, "verify.ts"),
     'import { PostgresDriver } from "@interlock/postgres";\nimport { Pool } from "pg";\nnew PostgresDriver(new Pool());\n',
+  );
+  copyFileSync(
+    join(root, "examples", "postgres-node", "src", "index.ts"),
+    join(temporary, "example.ts"),
   );
   writeFileSync(
     join(temporary, "tsconfig.json"),
@@ -121,8 +137,10 @@ try {
         module: "NodeNext",
         moduleResolution: "NodeNext",
         target: "ES2022",
+        skipLibCheck: true,
+        types: ["node"],
       },
-      include: ["verify.ts"],
+      include: ["verify.ts", "example.ts"],
     }),
   );
   execFileSync(process.execPath, ["verify.mjs"], {

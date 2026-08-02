@@ -7,6 +7,8 @@ run:
 pnpm install --frozen-lockfile
 pnpm format
 pnpm lint
+pnpm test
+node --test integration/core.test.mjs
 pnpm check
 docker compose up -d --wait
 TEST_DATABASE_URL=postgres://interlock:interlock@localhost:54329/interlock pnpm test:postgres

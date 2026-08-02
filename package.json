@@ -6,7 +6,8 @@
   "scripts": {
     "build": "tsc -b",
     "clean": "tsc -b --clean",
-    "check": "pnpm build && pnpm typecheck && node --test integration/core.test.mjs",
+    "check": "pnpm build && pnpm typecheck && pnpm test",
+    "test": "node --test integration/core.test.mjs integration/conformance.test.mjs",
     "typecheck": "tsc -p tsconfig.type-tests.json --pretty false",
     "test:postgres": "node scripts/require-postgres.mjs && pnpm build && node --test integration/postgres.test.mjs",
     "format": "prettier --check .",

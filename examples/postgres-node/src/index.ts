@@ -11,6 +11,7 @@ import {
 } from "@interlock/core";
 import { PostgresDriver, type PgTransaction } from "@interlock/postgres";
 import { Pool } from "pg";
+import { pathToFileURL } from "node:url";
 
 interface Application {
   id: string;
@@ -217,26 +218,38 @@ export function createApplications(
 }
 
 async function main() {
-  const pool = new Pool({ connectionString: process.env.TEST_DATABASE_URL });
+  const pool = new Pool({
+    connectionString: process.env.TEST_DATABASE_URL,
+    options: "-c search_path=interlock_example",
+  });
   try {
     const applications = createApplications(pool);
+    const request = {
+      id: "example",
+      event: "approve" as const,
+      input: { note: "Ready" },
+      actor: { id: "reviewer", permissions: ["applications:approve"] },
+      expectedVersion: "2" as VersionToken,
+      idempotency: { key: "example-approve" },
+    };
+    console.log("assessment", await applications.assess(request));
+    console.log("transition", await applications.transition(request));
+    console.log("duplicate", await applications.transition(request));
     console.log(
+      "stale",
       await applications.transition({
-        id: "example",
-        event: "approve",
-        input: { note: "Ready" },
-        actor: { id: "reviewer", permissions: ["applications:approve"] },
-        expectedVersion: "2",
-        idempotency: { key: "example-approve" },
+        ...request,
+        idempotency: { key: "example-stale" },
       }),
     );
+    const rows = await pool.query(`SELECT
+      (SELECT count(*)::int FROM interlock_transition_history) AS history,
+      (SELECT count(*)::int FROM interlock_outbox) AS outbox`);
+    console.log("stored", rows.rows[0]);
   } finally {
     await pool.end();
   }
 }
 
-if (
-  process.argv[1] &&
-  import.meta.url === new URL(process.argv[1], "file:").href
-)
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
   await main();

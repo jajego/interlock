@@ -10,3 +10,8 @@ coordinates concurrent inserts: a competitor waits for the owner's uniqueness
 outcome, observes its completed transition after commit, or inserts after owner
 rollback. The fingerprint is application-projected from normalized values and
 must include every semantic identity component, including expected-version mode.
+
+This algorithm is supported at PostgreSQL `read committed` isolation. Interlock
+rejects idempotent transitions configured for `repeatable read` or
+`serializable` before opening the transaction. It does not retry serialization
+failures.

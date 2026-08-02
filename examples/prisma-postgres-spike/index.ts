@@ -5,6 +5,7 @@ import {
   canonicalHash,
   createInterlock,
   defineLifecycle,
+  InterlockError,
   noInput,
   type IdempotencyClaim,
   type IdempotencyClaimResult,
@@ -45,17 +46,32 @@ const lifecycle = defineLifecycle<Resource, undefined, object, object>()({
   },
 });
 
+const required = (row: Record<string, unknown>, key: string): string => {
+  const value = row[key];
+  if (value === undefined || value === null)
+    throw new InterlockError(
+      "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+      `Prisma duplicate record is missing ${key}.`,
+    );
+  return String(value);
+};
+
 const rowToTransition = (row: Record<string, unknown>): TransitionRecord => ({
-  id: String(row.id),
-  lifecycle: String(row.lifecycle),
-  resourceType: String(row.resource_type),
-  resourceId: String(row.resource_id),
-  event: String(row.event),
-  fromState: String(row.from_state),
-  toState: String(row.to_state),
-  previousVersion: String(row.previous_version) as VersionToken,
-  nextVersion: String(row.next_version) as VersionToken,
-  occurredAt: new Date(String(row.occurred_at)),
+  id: required(row, "id"),
+  lifecycle: required(row, "lifecycle"),
+  resourceType: required(row, "resource_type"),
+  resourceId: required(row, "resource_id"),
+  event: required(row, "event"),
+  fromState: required(row, "from_state"),
+  toState: required(row, "to_state"),
+  previousVersion: required(row, "previous_version") as VersionToken,
+  nextVersion: required(row, "next_version") as VersionToken,
+  idempotencyKey: required(row, "idempotency_key"),
+  requestFingerprint: required(row, "request_fingerprint"),
+  occurredAt:
+    row.occurred_at instanceof Date
+      ? new Date(row.occurred_at.getTime())
+      : new Date(required(row, "occurred_at")),
 });
 
 class PrismaDriver implements TransactionDriver<Transaction> {
@@ -73,8 +89,6 @@ class PrismaDriver implements TransactionDriver<Transaction> {
     operation: (transaction: Transaction) => Promise<Result>,
     options: TransactionOptions = {},
   ): Promise<Result> {
-    if (options.readOnly)
-      throw new Error("The Prisma spike does not advertise read-only support.");
     const isolationLevels = {
       "read-committed": "ReadCommitted",
       "repeatable-read": "RepeatableRead",
@@ -85,7 +99,14 @@ class PrismaDriver implements TransactionDriver<Transaction> {
     >;
     const isolationLevel =
       isolationLevels[options.isolation ?? "read-committed"];
-    return this.prisma.$transaction(operation, { isolationLevel });
+    return this.prisma.$transaction(
+      async (transaction) => {
+        if (options.readOnly)
+          await transaction.$executeRawUnsafe("SET TRANSACTION READ ONLY");
+        return operation(transaction);
+      },
+      { isolationLevel },
+    );
   }
 
   async claimIdempotency(
@@ -140,7 +161,7 @@ class PrismaDriver implements TransactionDriver<Transaction> {
   async insertTransition(
     transaction: Transaction,
     value: TransitionRecord,
-  ): Promise<TransitionRecord> {
+  ): Promise<void> {
     await this.mark(transaction);
     await transaction.$executeRaw`
       INSERT INTO interlock_transition_history
@@ -148,7 +169,6 @@ class PrismaDriver implements TransactionDriver<Transaction> {
       VALUES
         (${value.id},${value.lifecycle},${value.resourceType},${value.resourceId},${value.event},${value.fromState},${value.toState},${value.previousVersion}::bigint,${value.nextVersion}::bigint,${value.occurredAt})
     `;
-    return value;
   }
 
   async insertOutbox(
@@ -228,11 +248,15 @@ try {
     ),
     "utf8",
   );
-  for (const statement of migration
+  const statements = migration
+    .replace(/^--.*$/gm, "")
     .split(";")
     .map((value) => value.trim())
-    .filter(Boolean))
-    await prisma.$executeRawUnsafe(statement);
+    .filter((value) => value && value !== "BEGIN" && value !== "COMMIT");
+  await prisma.$transaction(async (transaction) => {
+    for (const statement of statements)
+      await transaction.$executeRawUnsafe(statement);
+  });
   await prisma.$executeRawUnsafe(
     "CREATE TABLE IF NOT EXISTS spike_applications (id TEXT PRIMARY KEY, state TEXT NOT NULL, version BIGINT NOT NULL CHECK (version >= 1))",
   );
@@ -241,6 +265,12 @@ try {
   });
   const driver = new PrismaDriver(prisma);
   const interlock = createInterlock({ lifecycle, driver, binding });
+  const assessment = await interlock.assess({
+    id,
+    event: "approve",
+    actor: undefined,
+  });
+  assert.equal(assessment.status, "allowed");
   const result = await interlock.transition({
     id,
     event: "approve",

@@ -15,7 +15,9 @@ export interface BindingConformance<Transaction, Resource, Mutation, Context> {
   fromState: string;
   toState: string;
   expectedVersion: VersionToken;
+  staleVersion: VersionToken;
   nextVersion: VersionToken;
+  invalidSourceState: string;
   mutation: Mutation;
   advisoryOptions: TransactionOptions;
   authoritativeOptions: TransactionOptions;
@@ -23,7 +25,9 @@ export interface BindingConformance<Transaction, Resource, Mutation, Context> {
     context: Context,
     mode: "advisory" | "authoritative",
   ): Promise<void>;
-  relatedCount(): Promise<number>;
+  relatedCount?(): Promise<number>;
+  expectedRelatedCount?: number;
+  assertRelated?(): Promise<void>;
 }
 
 export async function verifyResourceBinding<
@@ -75,6 +79,7 @@ export async function verifyResourceBinding<
     });
     assert.equal(applied.status, "applied");
     if (applied.status !== "applied") return;
+    assert.equal(binding.getId(applied.resource), fixture.id);
     assert.equal(binding.getState(applied.resource), fixture.toState);
     assert.equal(binding.getVersion(applied.resource), fixture.nextVersion);
     await binding.applyRelated?.(transaction, {
@@ -84,9 +89,24 @@ export async function verifyResourceBinding<
       transitionId: "binding-conformance",
       occurredAt: new Date("2026-01-01T00:00:00.000Z"),
     });
+    if (binding.hydrateBeforeCommit) {
+      const hydrated = await binding.hydrateBeforeCommit(
+        transaction,
+        applied.resource,
+      );
+      assert.equal(binding.getId(hydrated), fixture.id);
+      assert.equal(binding.getState(hydrated), fixture.toState);
+      assert.equal(binding.getVersion(hydrated), fixture.nextVersion);
+    }
   });
-  assert.equal(await fixture.relatedCount(), 1);
+  if (fixture.assertRelated) await fixture.assertRelated();
+  else if (fixture.relatedCount)
+    assert.equal(
+      await fixture.relatedCount(),
+      fixture.expectedRelatedCount ?? (binding.applyRelated ? 1 : 0),
+    );
 
+  await fixture.reset();
   await driver.transaction(async (transaction) => {
     const resource = await binding.loadPrimary(transaction, fixture.id);
     assert.ok(resource);
@@ -94,10 +114,25 @@ export async function verifyResourceBinding<
       resource,
       fromState: fixture.fromState,
       toState: fixture.toState,
-      expectedVersion: fixture.expectedVersion,
+      expectedVersion: fixture.staleVersion,
       nextVersion: fixture.nextVersion,
       mutation: fixture.mutation,
     });
     assert.equal(stale.status, "conflict");
+  });
+
+  await fixture.reset();
+  await driver.transaction(async (transaction) => {
+    const resource = await binding.loadPrimary(transaction, fixture.id);
+    assert.ok(resource);
+    const invalidState = await binding.applyPrimary(transaction, {
+      resource,
+      fromState: fixture.invalidSourceState,
+      toState: fixture.toState,
+      expectedVersion: fixture.expectedVersion,
+      nextVersion: fixture.nextVersion,
+      mutation: fixture.mutation,
+    });
+    assert.equal(invalidState.status, "conflict");
   });
 }
