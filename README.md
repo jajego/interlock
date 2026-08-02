@@ -10,9 +10,11 @@ Interlock gives important domain changes one dependable transaction boundary.
 Your version-checked resource update, related writes, immutable history,
 idempotency result, and outbox messages commit together or roll back together.
 
-Use it for approvals, account status changes, order progression, publishing
-flows, fulfillment steps, and other business transitions where a partial write
-would be expensive or difficult to repair.
+XState models complex statecharts. Temporal runs durable workflows. Interlock
+makes a single domain transition, and every database write it requires, commit
+atomically in PostgreSQL. Use it for approvals, account status changes, order
+progression, publishing flows, fulfillment steps, and other business transitions
+where a partial write would be expensive or difficult to repair.
 
 ## Why Interlock?
 
@@ -242,6 +244,11 @@ reference example demonstrates aggregate versioning for this purpose.
 A connection loss during commit reports `INTERLOCK_COMMIT_OUTCOME_UNKNOWN`.
 Reconcile through stored idempotency and history data instead of blindly
 retrying.
+
+Interlock snapshots top-level command identity and JSON protocol values before
+crossing asynchronous persistence boundaries. Actor values and parsed input are
+application-owned references; parsers and callbacks must not mutate them after
+returning.
 
 ## Compatibility
 
