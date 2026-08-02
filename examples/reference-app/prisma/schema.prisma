@@ -1,0 +1,99 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model Tenant {
+  id          String             @id
+  name        String
+  permits     Permit[]
+  memberships TenantMembership[]
+  createdAt   DateTime           @default(now()) @map("created_at")
+  @@map("tenants")
+}
+
+model User {
+  id          String             @id
+  name        String
+  memberships TenantMembership[]
+  createdAt   DateTime           @default(now()) @map("created_at")
+  @@map("users")
+}
+
+model TenantMembership {
+  tenantId String @map("tenant_id")
+  userId   String @map("user_id")
+  role     String
+  tenant   Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  user     User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  @@id([tenantId, userId])
+  @@index([userId])
+  @@map("tenant_memberships")
+}
+
+model Permit {
+  id              String             @id
+  tenantId        String             @map("tenant_id")
+  permitNumber    Int                @map("permit_number")
+  state           String
+  version         BigInt             @default(1)
+  applicantName   String             @map("applicant_name")
+  applicantUserId String             @map("applicant_user_id")
+  createdAt       DateTime           @default(now()) @map("created_at")
+  updatedAt       DateTime           @updatedAt @map("updated_at")
+  tenant          Tenant             @relation(fields: [tenantId], references: [id])
+  documents       PermitDocument[]
+  assignments     ReviewAssignment[]
+  decisions       ReviewDecision[]
+  @@unique([tenantId, permitNumber])
+  @@index([tenantId, state])
+  @@map("permits")
+}
+
+model PermitDocument {
+  id         String   @id
+  permitId   String   @map("permit_id")
+  kind       String
+  storageKey String   @map("storage_key")
+  createdAt  DateTime @default(now()) @map("created_at")
+  permit     Permit   @relation(fields: [permitId], references: [id], onDelete: Cascade)
+  @@index([permitId])
+  @@map("permit_documents")
+}
+
+model ReviewAssignment {
+  id         String   @id
+  permitId   String   @map("permit_id")
+  reviewerId String   @map("reviewer_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+  permit     Permit   @relation(fields: [permitId], references: [id], onDelete: Cascade)
+  @@unique([permitId])
+  @@index([reviewerId])
+  @@map("review_assignments")
+}
+
+model ReviewDecision {
+  id           String   @id
+  permitId     String   @map("permit_id")
+  transitionId String   @unique @map("transition_id")
+  reviewerId   String   @map("reviewer_id")
+  decision     String
+  reason       String?
+  createdAt    DateTime @default(now()) @map("created_at")
+  permit       Permit   @relation(fields: [permitId], references: [id], onDelete: Cascade)
+  @@index([permitId, createdAt])
+  @@map("review_decisions")
+}
+
+model DeliveredNotification {
+  id         String   @id
+  outboxId   String   @unique @map("outbox_id")
+  topic      String
+  payload    Json
+  workerId   String   @map("worker_id")
+  deliveredAt DateTime @default(now()) @map("delivered_at")
+  @@map("delivered_notifications")
+}

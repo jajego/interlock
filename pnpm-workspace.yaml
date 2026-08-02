@@ -6,3 +6,5 @@ allowBuilds:
   "@prisma/engines": true
   esbuild: true
   prisma: true
+minimumReleaseAgeExclude:
+  - tsx@4.23.4

@@ -22,8 +22,8 @@ jobs:
     env:
       TEST_DATABASE_URL: postgres://interlock:interlock@localhost:5432/interlock
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with: { node-version: 26, registry-url: "https://registry.npmjs.org" }
       - uses: pnpm/action-setup@v6
         with: { version: 11.18.0 }
@@ -36,4 +36,10 @@ jobs:
       - run: pnpm pack:check
       - run: pnpm --filter @interlock/prisma-postgres-spike generate
       - run: pnpm --filter @interlock/prisma-postgres-spike start
+      - run: pnpm --filter @interlock/reference-app generate
+      - run: pnpm --filter @interlock/reference-app migrate
+      - run: pnpm --filter @interlock/reference-app seed
+      - run: pnpm --filter @interlock/reference-app build
+      - run: pnpm --filter @interlock/reference-app test
+      - run: pnpm --filter @interlock/reference-app verify:packed
       - run: pnpm release

@@ -1,0 +1,33 @@
+{
+  "name": "@interlock/reference-app",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "generate": "prisma generate",
+    "migrate": "tsx src/prepare-database.ts && prisma migrate deploy && tsx src/install-interlock.ts",
+    "seed": "tsx prisma/seed.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/src/server.js",
+    "worker": "node dist/src/workers/outbox.js",
+    "test": "tsx --test --test-concurrency=1 test/*.test.ts",
+    "benchmark:cpu": "tsx benchmark/cpu.ts",
+    "benchmark:database": "tsx benchmark/database.ts",
+    "benchmark:http": "tsx benchmark/http.ts",
+    "verify:packed": "node scripts/verify-packed.mjs"
+  },
+  "dependencies": {
+    "@interlock/core": "workspace:*",
+    "@interlock/postgres": "workspace:*",
+    "@prisma/adapter-pg": "^7.9.1",
+    "@prisma/client": "^7.9.1",
+    "fastify": "^5.11.0",
+    "pg": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "@types/pg": "^8.20.2",
+    "prisma": "^7.9.1",
+    "tsx": "^4.23.4",
+    "typescript": "^6.0.3"
+  }
+}
