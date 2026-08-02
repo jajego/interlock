@@ -375,17 +375,30 @@ function normalizeParseResult(value: unknown): ParseResult<unknown> {
   };
 }
 
-function snapshotSchema(schema: AnySchema | undefined): AnySchema | undefined {
-  if (!schema) return undefined;
+function snapshotSchema(schema: unknown, event: string): AnySchema | undefined {
+  if (schema === undefined) return undefined;
+  if (!schema || typeof schema !== "object")
+    invalid(`Event ${event} has an unsupported input schema.`);
   if ("parse" in schema) {
-    const parse = (schema as InputSchema<unknown, unknown>).parse.bind(schema);
-    return Object.freeze({ parse });
+    const parse = schema.parse;
+    if (typeof parse !== "function")
+      invalid(`Event ${event} has an invalid input parser.`);
+    return Object.freeze({ parse: parse.bind(schema) });
   }
-  const standard = (schema as StandardSchema<unknown, unknown>)["~standard"];
+  if (!("~standard" in schema))
+    invalid(`Event ${event} has an unsupported input schema.`);
+  const standard = schema["~standard"];
+  if (!standard || typeof standard !== "object")
+    invalid(`Event ${event} has an unsupported Standard Schema adapter.`);
+  const standardValue = standard as Record<PropertyKey, unknown>;
+  const version = standardValue.version;
+  const validate = standardValue.validate;
+  if (version !== 1 || typeof validate !== "function")
+    invalid(`Event ${event} has an unsupported Standard Schema adapter.`);
   return Object.freeze({
     "~standard": Object.freeze({
       version: 1 as const,
-      validate: standard.validate.bind(standard),
+      validate: validate.bind(standard),
     }),
   });
 }
@@ -569,140 +582,141 @@ export function defineLifecycle<
     return ((value: unknown) => defineLifecycle(value as never)) as never;
   if (!definition || typeof definition !== "object")
     invalid("Lifecycle definition is invalid.");
-  if (!/^[a-z][a-z0-9_-]*$/.test(definition.name))
+  const name = definition.name;
+  const definitionVersion = definition.definitionVersion;
+  const statesValue = definition.states;
+  const eventsValue = definition.events;
+  const historyValue = definition.history;
+  const idempotencyValue = definition.idempotency;
+  if (typeof name !== "string" || !/^[a-z][a-z0-9_-]*$/.test(name))
     invalid("Lifecycle name is invalid.");
-  if (!Array.isArray(definition.states))
+  if (!Array.isArray(statesValue))
     invalid("Lifecycle states must be an array.");
-  const states = new Set(definition.states);
+  const stateValues = [...statesValue];
+  const states = new Set(stateValues);
   if (
-    definition.states.some((state) => typeof state !== "string" || !state) ||
-    states.size !== definition.states.length ||
+    stateValues.some((state) => typeof state !== "string" || !state) ||
+    states.size !== stateValues.length ||
     states.size === 0
   )
     invalid("Lifecycle states must be unique and non-empty.");
-  if (
-    !definition.history ||
-    typeof definition.history !== "object" ||
-    typeof definition.history.resourceType !== "string" ||
-    !definition.history.resourceType
-  )
+  if (!historyValue || typeof historyValue !== "object")
+    invalid("History resource type must be a non-empty string.");
+  const resourceType = historyValue.resourceType;
+  const historyActor = historyValue.actor;
+  const historyMetadata = historyValue.metadata;
+  if (typeof resourceType !== "string" || !resourceType)
     invalid("History resource type must be a non-empty string.");
   if (
-    definition.definitionVersion !== undefined &&
-    (typeof definition.definitionVersion !== "string" ||
-      !definition.definitionVersion)
+    definitionVersion !== undefined &&
+    (typeof definitionVersion !== "string" || !definitionVersion)
   )
     invalid("Definition version must be a non-empty string.");
   if (
-    (definition.history.actor !== undefined &&
-      typeof definition.history.actor !== "function") ||
-    (definition.history.metadata !== undefined &&
-      typeof definition.history.metadata !== "function") ||
-    (definition.idempotency !== undefined &&
-      (!definition.idempotency ||
-        typeof definition.idempotency !== "object" ||
-        typeof definition.idempotency.fingerprint !== "function"))
+    (historyActor !== undefined && typeof historyActor !== "function") ||
+    (historyMetadata !== undefined && typeof historyMetadata !== "function")
   )
     invalid("Lifecycle projections must be callable.");
-  if (!definition.events || typeof definition.events !== "object")
+  let fingerprint: ((...args: never[]) => unknown) | undefined;
+  if (idempotencyValue !== undefined) {
+    if (!idempotencyValue || typeof idempotencyValue !== "object")
+      invalid("Lifecycle projections must be callable.");
+    const fingerprintValue = idempotencyValue.fingerprint;
+    if (typeof fingerprintValue !== "function")
+      invalid("Lifecycle projections must be callable.");
+    fingerprint = fingerprintValue;
+  }
+  if (!eventsValue || typeof eventsValue !== "object")
     invalid("Lifecycle events must be an object.");
 
-  const eventEntries = Object.entries(definition.events) as Array<
-    [
-      string,
-      {
-        from: readonly string[];
-        to: string;
-        input?: AnySchema;
-        authorize?: unknown;
-        mutate?: unknown;
-        audit?: unknown;
-        outbox?: unknown;
-        guards?: readonly { name: string; evaluate?: unknown }[];
-      },
-    ]
-  >;
+  const eventEntries = Object.entries(eventsValue);
   const events = Object.fromEntries(
     eventEntries.map(([name, event]) => {
       if (!event || typeof event !== "object")
         invalid(`Event ${name} is invalid.`);
       if (!name || name.length > 128)
         invalid("Event names must contain 1 to 128 characters.");
-      if (!Array.isArray(event.from) || event.from.length === 0)
+      const fromValue = event.from;
+      const to = event.to;
+      const inputValue = event.input;
+      const authorize = event.authorize;
+      const guardsValue = event.guards;
+      const mutate = event.mutate;
+      const audit = event.audit;
+      const outbox = event.outbox;
+      if (!Array.isArray(fromValue) || fromValue.length === 0)
         invalid(`Event ${name} must have at least one source state.`);
-      if (new Set(event.from).size !== event.from.length)
+      const from = [...fromValue];
+      if (new Set(from).size !== from.length)
         invalid(`Event ${name} has duplicate source states.`);
-      if (event.from.some((state) => !states.has(state)))
+      if (from.some((state) => !states.has(state)))
         invalid(`Event ${name} has an unknown source state.`);
-      if (!states.has(event.to))
+      if (typeof to !== "string" || !states.has(to))
         invalid(`Event ${name} has an unknown target state.`);
-      if (event.from.includes(event.to))
+      if (from.includes(to))
         invalid(`Event ${name} cannot transition a state to itself.`);
-      if (event.guards !== undefined && !Array.isArray(event.guards))
+      if (guardsValue !== undefined && !Array.isArray(guardsValue))
         invalid(`Event ${name} guards must be an array.`);
-      if (event.guards?.some((guard) => !guard || typeof guard !== "object"))
-        invalid(`Event ${name} has invalid guards.`);
-      const guards = event.guards?.map((guard) => guard.name) ?? [];
-      if (guards.some((guard) => typeof guard !== "string" || !guard))
-        invalid(`Event ${name} has an empty or invalid guard name.`);
-      if (new Set(guards).size !== guards.length)
+      const guardValues =
+        guardsValue === undefined ? undefined : [...guardsValue];
+      const guards = guardValues?.map((guard) => {
+        if (!guard || typeof guard !== "object")
+          invalid(`Event ${name} has invalid guards.`);
+        const guardName = guard.name;
+        const evaluate = guard.evaluate;
+        if (typeof guardName !== "string" || !guardName)
+          invalid(`Event ${name} has an empty or invalid guard name.`);
+        if (typeof evaluate !== "function")
+          invalid(`Event ${name} has invalid callbacks.`);
+        return Object.freeze({
+          name: guardName,
+          evaluate,
+        });
+      });
+      if (
+        guards &&
+        new Set(guards.map((guard) => guard.name)).size !== guards.length
+      )
         invalid(`Event ${name} has duplicate guard names.`);
       if (
-        (event.mutate !== undefined && typeof event.mutate !== "function") ||
-        (event.authorize !== undefined &&
-          typeof event.authorize !== "function") ||
-        (event.audit !== undefined && typeof event.audit !== "function") ||
-        (event.outbox !== undefined && typeof event.outbox !== "function") ||
-        event.guards?.some((guard) => typeof guard.evaluate !== "function")
+        (mutate !== undefined && typeof mutate !== "function") ||
+        (authorize !== undefined && typeof authorize !== "function") ||
+        (audit !== undefined && typeof audit !== "function") ||
+        (outbox !== undefined && typeof outbox !== "function")
       )
         invalid(`Event ${name} has invalid callbacks.`);
-      if (event.input !== undefined) {
-        if (!event.input || typeof event.input !== "object")
-          invalid(`Event ${name} has an unsupported input schema.`);
-        if ("parse" in event.input) {
-          if (typeof event.input.parse !== "function")
-            invalid(`Event ${name} has an invalid input parser.`);
-        } else if ("~standard" in event.input) {
-          const standard = event.input["~standard"];
-          if (
-            !standard ||
-            typeof standard !== "object" ||
-            standard.version !== 1 ||
-            typeof standard.validate !== "function"
-          )
-            invalid(
-              `Event ${name} has an unsupported Standard Schema adapter.`,
-            );
-        } else invalid(`Event ${name} has an unsupported input schema.`);
-      }
+      const input = snapshotSchema(inputValue, name);
       return [
         name,
         Object.freeze({
-          ...event,
-          from: Object.freeze([...event.from]),
-          ...(event.input === undefined
-            ? {}
-            : { input: snapshotSchema(event.input) }),
-          ...(event.guards
-            ? {
-                guards: Object.freeze(
-                  event.guards.map((guard) => Object.freeze({ ...guard })),
-                ),
-              }
-            : {}),
+          from: Object.freeze(from),
+          to,
+          ...(input === undefined ? {} : { input }),
+          ...(authorize === undefined ? {} : { authorize }),
+          ...(guards === undefined ? {} : { guards: Object.freeze(guards) }),
+          ...(mutate === undefined ? {} : { mutate }),
+          ...(audit === undefined ? {} : { audit }),
+          ...(outbox === undefined ? {} : { outbox }),
         }),
       ];
     }),
   ) as Definition["events"];
 
   const lifecycle = {
-    ...definition,
-    states: Object.freeze([...definition.states]),
+    name,
+    ...(definitionVersion === undefined ? {} : { definitionVersion }),
+    states: Object.freeze(stateValues),
     events: Object.freeze(events),
-    history: Object.freeze({ ...definition.history }),
-    ...(definition.idempotency
-      ? { idempotency: Object.freeze({ ...definition.idempotency }) }
-      : {}),
+    history: Object.freeze({
+      resourceType,
+      ...(historyActor === undefined ? {} : { actor: historyActor }),
+      ...(historyMetadata === undefined ? {} : { metadata: historyMetadata }),
+    }),
+    ...(fingerprint === undefined
+      ? {}
+      : {
+          idempotency: Object.freeze({ fingerprint }),
+        }),
     getEvent: (name: string) =>
       Object.hasOwn(events, name)
         ? (events[name as keyof Definition["events"]] as unknown as EventMap<
