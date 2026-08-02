@@ -93,6 +93,7 @@ export const primaryRowOnly = {
   notes: "This event depends only on the primary resource row.",
 } as const satisfies RelatedDataConsistency;
 
+/** Immutable command identity shared by lifecycle and persistence callbacks. */
 export interface InterlockOperation<Actor, Event extends string = string> {
   readonly mode: AssessmentMode;
   readonly id: string;
@@ -203,7 +204,7 @@ interface ResourceBindingBase<
   ): Promise<Resource | null>;
   getId(resource: Resource): string;
   getState(resource: Resource): string;
-  getVersion(resource: Resource): VersionToken;
+  getVersion(resource: Resource): string;
   applyPrimary(
     transaction: Transaction,
     args: {
@@ -216,7 +217,7 @@ interface ResourceBindingBase<
     },
   ): Promise<
     | { status: "applied"; resource: Resource }
-    | { status: "conflict"; actual?: { state: string; version: VersionToken } }
+    | { status: "conflict"; actual?: { state: string; version: string } }
     | { status: "not-found" }
   >;
   applyRelated?(
@@ -261,6 +262,7 @@ type ContextBinding<Transaction, Actor, Context, Event extends string> = [
       };
     };
 
+/** Maps one application resource and its writes onto a driver transaction. */
 export type ResourceBinding<
   Transaction,
   Resource,
