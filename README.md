@@ -29,6 +29,8 @@ where a partial write would be expensive or difficult to repair.
   transition instead of applying it twice.
 - **PostgreSQL-native:** bring your own `pg` pool and write ordinary SQL against
   ordinary application tables.
+- **Round-trip conscious:** transactional-outbox rows are inserted in batches
+  without skipping protocol validation.
 - **Small footprint:** `@interlock/core` has zero external runtime dependencies.
 
 | Tool                | Best fit                                                                |
@@ -154,7 +156,9 @@ code.
 ### 3. Assess and transition
 
 Use `assess()` for advisory feedback in a UI. It performs a read-only check and
-does not reserve or guarantee the transition.
+does not reserve or guarantee the transition. Calling `assess()` immediately
+before `transition()` intentionally repeats authoritative reads and checks, so
+servers should not make that a mechanical part of every command.
 
 ```ts
 const assessment = await orders.assess({
@@ -255,6 +259,25 @@ Inside one driver-owned transaction it:
 7. inserts append-only history and outbox rows;
 8. completes idempotency and commits.
 
+Bindings should normally return the updated resource directly from a conditional
+`UPDATE ... RETURNING`. `hydrateBeforeCommit()` adds another database round trip
+and is intended for joins, generated values, or projections that the primary
+update cannot reasonably return.
+
+If authorization and multiple guards need the same related data, memoize the
+promise within that one assessment or transition rather than querying again:
+
+```ts
+function once<T>(load: () => Promise<T>): () => Promise<T> {
+  let pending: Promise<T> | undefined;
+  return () => (pending ??= load());
+}
+```
+
+Rejected promises remain failures for that operation. Cross-request caching is
+outside Interlock, and guards remain sequential for ordering and short-circuit
+behavior.
+
 Expected outcomes after an idempotency claim force rollback before being
 returned. A same-key duplicate returns the stored transition identity without
 rerunning current policy or exposing a potentially unrelated current resource.
@@ -346,7 +369,13 @@ docker compose up -d --wait
 TEST_DATABASE_URL=postgres://interlock:interlock@localhost:54329/interlock pnpm test:postgres
 
 pnpm pack:check
+
+TEST_DATABASE_URL=postgres://interlock:interlock@localhost:54329/interlock pnpm benchmark
 ```
+
+Benchmark methodology and current maintainer measurements are recorded in
+[docs/performance.md](docs/performance.md). Local Docker loopback results are
+not production latency guarantees.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution expectations and
 [LAUNCH.md](LAUNCH.md) for the alpha release checklist.

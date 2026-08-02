@@ -14,6 +14,8 @@
     "test": "node --test integration/core.test.mjs integration/conformance.test.mjs",
     "typecheck": "tsc -p tsconfig.type-tests.json --pretty false",
     "test:postgres": "node scripts/require-postgres.mjs && pnpm build && node --test integration/postgres.test.mjs",
+    "benchmark": "node scripts/benchmark.mjs",
+    "benchmark:evaluate": "node scripts/evaluate-postgres.mjs",
     "format": "prettier --check .",
     "lint": "eslint .",
     "pack:check": "node scripts/pack-check.mjs",

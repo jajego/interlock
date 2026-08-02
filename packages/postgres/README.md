@@ -33,4 +33,6 @@ higher isolation levels rather than claiming an unproved algorithm.
 This package guarantees atomic insertion, not outbox delivery. The
 transition-history table is append-only by protocol; applications that need
 database enforcement should deny their runtime role `UPDATE` and `DELETE` on
-that table. Node.js 22.14 or newer and `pg` 8.16.3 through 8.x are supported.
+that table. Outbox rows are inserted in parameterized batches of up to 500 to
+limit database round trips without approaching PostgreSQL's parameter limit.
+Node.js 22.14 or newer and `pg` 8.16.3 through 8.x are supported.

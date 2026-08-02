@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { InterlockError, isInterlockError } from "./errors.js";
-import { assertJsonValue, cloneJsonValue } from "./json.js";
+import { assertJsonValue, snapshotJsonValue } from "./json.js";
 import type {
   EventMap,
   EventSchemaMap,
@@ -88,9 +88,9 @@ function nonempty(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-function serialize(value: unknown, label: string): asserts value is JsonValue {
+function snapshotJson(value: unknown, label: string): JsonValue {
   try {
-    assertJsonValue(value);
+    return snapshotJsonValue(value);
   } catch (error) {
     throw operational(
       "INTERLOCK_SERIALIZATION_FAILED",
@@ -98,11 +98,6 @@ function serialize(value: unknown, label: string): asserts value is JsonValue {
       error,
     );
   }
-}
-
-function snapshotJson(value: unknown, label: string): JsonValue {
-  serialize(value, label);
-  return cloneJsonValue(value);
 }
 
 function unexpected(error: unknown): InterlockError {
@@ -512,12 +507,10 @@ export function createInterlock<
     let metadata: JsonValue | undefined;
     try {
       if (value.auditData !== undefined) {
-        assertJsonValue(value.auditData);
-        auditData = cloneJsonValue(value.auditData);
+        auditData = snapshotJsonValue(value.auditData);
       }
       if (value.metadata !== undefined) {
-        assertJsonValue(value.metadata);
-        metadata = cloneJsonValue(value.metadata);
+        metadata = snapshotJsonValue(value.metadata);
       }
     } catch (cause) {
       throw new InterlockError(

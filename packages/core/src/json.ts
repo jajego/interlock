@@ -43,6 +43,52 @@ export function cloneJsonValue(value: JsonValue): JsonValue {
   );
 }
 
+export function snapshotJsonValue(
+  value: unknown,
+  path = "$",
+  ancestors = new WeakSet<object>(),
+): JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) throw new TypeError(`${path} is cyclic`);
+    ancestors.add(value);
+    const snapshot: JsonValue[] = [];
+    for (let index = 0; index < value.length; index += 1)
+      snapshot.push(
+        snapshotJsonValue(value[index], `${path}[${index}]`, ancestors),
+      );
+    ancestors.delete(value);
+    return snapshot;
+  }
+  if (
+    typeof value === "object" &&
+    Object.getPrototypeOf(value) === Object.prototype
+  ) {
+    if (ancestors.has(value)) throw new TypeError(`${path} is cyclic`);
+    ancestors.add(value);
+    const snapshot: Record<string, JsonValue> = {};
+    for (const key of Object.keys(value)) {
+      const item = (value as Record<string, unknown>)[key];
+      if (item === undefined)
+        throw new TypeError(`${path}.${key} is undefined`);
+      const itemSnapshot = snapshotJsonValue(item, `${path}.${key}`, ancestors);
+      if (key === "__proto__")
+        Object.defineProperty(snapshot, key, {
+          value: itemSnapshot,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      else snapshot[key] = itemSnapshot;
+    }
+    ancestors.delete(value);
+    return snapshot;
+  }
+  throw new TypeError(`${path} is not JSON-safe`);
+}
+
 export function canonicalJson(value: JsonValue): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;

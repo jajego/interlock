@@ -19,6 +19,8 @@ export interface PgTransaction {
   ): Promise<QueryResult<Row>>;
 }
 
+const OUTBOX_BATCH_SIZE = 500;
+
 class ScopedTransaction implements PgTransaction {
   active = true;
   constructor(private readonly client: PoolClient) {}
@@ -309,11 +311,20 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
     transaction: PgTransaction,
     messages: readonly OutboxInsert[],
   ): Promise<void> {
-    for (const message of messages) {
-      await transaction.query(
-        `INSERT INTO interlock_outbox (id, lifecycle, resource_type, resource_id, transition_id, topic, message_key, payload, created_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [
+    for (
+      let offset = 0;
+      offset < messages.length;
+      offset += OUTBOX_BATCH_SIZE
+    ) {
+      const batch = messages.slice(offset, offset + OUTBOX_BATCH_SIZE);
+      const values: unknown[] = [];
+      const rows: string[] = [];
+      for (const message of batch) {
+        const parameter = values.length;
+        rows.push(
+          `($${parameter + 1},$${parameter + 2},$${parameter + 3},$${parameter + 4},$${parameter + 5},$${parameter + 6},$${parameter + 7},$${parameter + 8},$${parameter + 9})`,
+        );
+        values.push(
           message.id,
           message.lifecycle,
           message.resourceType,
@@ -323,8 +334,18 @@ export class PostgresDriver implements TransactionDriver<PgTransaction> {
           message.key ?? null,
           message.payload,
           message.createdAt,
-        ],
+        );
+      }
+      const result = await transaction.query(
+        `INSERT INTO interlock_outbox (id, lifecycle, resource_type, resource_id, transition_id, topic, message_key, payload, created_at)
+         VALUES ${rows.join(",")}`,
+        values,
       );
+      if (result.rowCount !== batch.length)
+        throw new InterlockError(
+          "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+          "Outbox insertion affected an unexpected row count.",
+        );
     }
   }
 }

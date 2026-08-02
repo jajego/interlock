@@ -586,6 +586,41 @@ test("planned JSON and actor identity are snapshotted before writes", async () =
   assert.equal(fixture.getOutbox()[0].payload.value, "planned");
 });
 
+test("JSON snapshots detach nested values without prototype mutation", async () => {
+  const auditData = JSON.parse(
+    '{"__proto__":{"polluted":true},"nested":[{"value":"planned"}]}',
+  );
+  const fixture = executorFixture({ audit: () => auditData });
+  const result = await fixture.subject.transition(transitionRequest);
+  auditData.nested[0].value = "mutated";
+  auditData.__proto__.polluted = false;
+
+  assert.equal(result.status, "committed");
+  assert.equal(result.transition.auditData.nested[0].value, "planned");
+  assert.equal(result.transition.auditData.__proto__.polluted, true);
+  assert.equal(
+    Object.getPrototypeOf(result.transition.auditData),
+    Object.prototype,
+  );
+  assert.equal({}.polluted, undefined);
+});
+
+test("JSON snapshot failures retain the nested value path", async () => {
+  const fixture = executorFixture({
+    outbox: () => [
+      { topic: "invalid", payload: { nested: [{ invalid: undefined }] } },
+    ],
+  });
+  await assert.rejects(
+    fixture.subject.transition(transitionRequest),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_SERIALIZATION_FAILED" &&
+      error.cause?.message === "$.nested[0].invalid is undefined",
+  );
+  assert.equal(fixture.order.includes("apply"), false);
+});
+
 test("top-level request identity is snapshotted before asynchronous parsing", async () => {
   let resume;
   let parsing;
@@ -861,6 +896,21 @@ test("outbox descriptors enforce shape and exact byte limits before writes", asy
       error.code === "INTERLOCK_SERIALIZATION_FAILED",
   );
   assert.equal(oversized.order.includes("apply"), false);
+});
+
+test("large outbox plans are fully validated before application writes", async () => {
+  const descriptors = Array.from({ length: 501 }, (_, index) => ({
+    topic: index === 500 ? "" : "probe",
+    payload: { index },
+  }));
+  const fixture = executorFixture({ outbox: () => descriptors });
+  await assert.rejects(
+    fixture.subject.transition(transitionRequest),
+    (error) =>
+      isInterlockError(error) &&
+      error.code === "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+  );
+  assert.equal(fixture.order.includes("apply"), false);
 });
 
 test("executor configuration rejects invalid outbox limits", () => {
