@@ -126,6 +126,7 @@ test("validated definitions snapshot caller-owned input parsers", async () => {
 function executorFixture(options = {}) {
   const order = [];
   let inserted;
+  let insertedOutbox;
   let claimed;
   const driver = {
     transaction: (operation, transactionOptions) => {
@@ -143,13 +144,17 @@ function executorFixture(options = {}) {
       inserted = value;
       return options.insertTransition?.(value);
     },
-    insertOutbox: async () => order.push("outbox"),
+    insertOutbox: async (_transaction, messages) => {
+      order.push("outbox");
+      insertedOutbox = messages;
+    },
   };
   const definition = {
     name: "item",
     states: ["a", "b"],
     history: {
       resourceType: "item",
+      actor: () => options.actorIdentity ?? {},
       metadata: (args) => {
         order.push("metadata");
         return options.metadataCallback?.(args) ?? options.metadata ?? {};
@@ -208,7 +213,7 @@ function executorFixture(options = {}) {
   ];
   const subject = createInterlock({
     lifecycle: defineLifecycle()(definition),
-    driver,
+    driver: options.driver ?? driver,
     binding,
     now:
       options.now ??
@@ -222,6 +227,7 @@ function executorFixture(options = {}) {
     subject,
     order,
     getTransition: () => inserted,
+    getOutbox: () => insertedOutbox,
     getClaim: () => claimed,
   };
 }
@@ -330,6 +336,84 @@ test("history projections and serialization finish before application writes", a
   const fixture = executorFixture();
   await fixture.subject.transition(transitionRequest);
   assert.ok(fixture.order.indexOf("metadata") < fixture.order.indexOf("apply"));
+});
+
+test("planned JSON and actor identity are snapshotted before writes", async () => {
+  const auditData = { value: "planned" };
+  const metadata = { value: "planned" };
+  const payload = { value: "planned" };
+  const actorIdentity = { actorType: "user", actorId: "planned" };
+  const fixture = executorFixture({
+    audit: () => auditData,
+    metadataCallback: () => metadata,
+    actorIdentity,
+    outbox: () => {
+      void Promise.resolve().then(() => {
+        auditData.value = "mutated";
+        metadata.value = "mutated";
+        payload.value = "mutated";
+        actorIdentity.actorId = "mutated";
+      });
+      return [{ topic: "probe", payload }];
+    },
+  });
+
+  const result = await fixture.subject.transition(transitionRequest);
+  assert.equal(result.status, "committed");
+  assert.equal(fixture.getTransition().auditData.value, "planned");
+  assert.equal(fixture.getTransition().metadata.value, "planned");
+  assert.equal(fixture.getTransition().actorId, "planned");
+  assert.equal(fixture.getOutbox()[0].payload.value, "planned");
+});
+
+test("top-level request identity is snapshotted before asynchronous parsing", async () => {
+  let resume;
+  let parsing;
+  const parserStarted = new Promise((resolve) => {
+    parsing = resolve;
+  });
+  const parserResumed = new Promise((resolve) => {
+    resume = resolve;
+  });
+  const fixture = executorFixture({
+    input: {
+      parse: async () => {
+        parsing();
+        await parserResumed;
+        return { success: true, value: {} };
+      },
+    },
+    metadataCallback: ({ request }) => request.metadata,
+  });
+  const request = {
+    ...transitionRequest,
+    idempotency: { ...transitionRequest.idempotency },
+    input: {},
+    metadata: { value: "planned" },
+    correlationId: "correlation-1",
+    causationId: "causation-1",
+  };
+
+  const pending = fixture.subject.transition(request);
+  await parserStarted;
+  request.id = "item-2";
+  request.event = "other";
+  request.expectedVersion = "9";
+  request.idempotency.key = "other-key";
+  request.metadata.value = "mutated";
+  request.correlationId = "other-correlation";
+  request.causationId = "other-causation";
+  resume();
+
+  const result = await pending;
+  assert.equal(result.status, "committed");
+  assert.equal(fixture.getClaim().resourceId, "item-1");
+  assert.equal(fixture.getClaim().key, "key");
+  assert.equal(fixture.getTransition().resourceId, "item-1");
+  assert.equal(fixture.getTransition().event, "move");
+  assert.equal(fixture.getTransition().metadata.value, "planned");
+  assert.equal(fixture.getTransition().correlationId, "correlation-1");
+  assert.equal(fixture.getTransition().causationId, "causation-1");
 });
 
 test("runtime boundaries return unknown-event and invalid-input", async () => {
@@ -608,9 +692,15 @@ test("duplicate records must match the normalized request", async () => {
     { ...validDuplicate, event: "other" },
     { ...validDuplicate, idempotencyKey: "other" },
     { ...validDuplicate, requestFingerprint: "other" },
+    { ...validDuplicate, fromState: "wrong" },
+    { ...validDuplicate, toState: "wrong" },
     { ...validDuplicate, previousVersion: "bad" },
     { ...validDuplicate, occurredAt: new Date("invalid") },
     { ...validDuplicate, id: "" },
+    { ...validDuplicate, actorId: 1 },
+    { ...validDuplicate, correlationId: 1 },
+    { ...validDuplicate, auditData: new Date() },
+    { ...validDuplicate, metadata: { invalid: undefined } },
   ]) {
     const fixture = executorFixture({
       claim: { status: "duplicate", transition },
@@ -677,6 +767,34 @@ test("PostgreSQL operational codes remain distinct from domain conflicts", () =>
     normalizePostgresError({ code: "57014" }).code,
     "INTERLOCK_CANCELLED",
   );
+});
+
+test("PostgreSQL transient errors survive executor operation wrapping", async () => {
+  for (const [code, expected] of [
+    ["40001", "INTERLOCK_SERIALIZATION_CONFLICT"],
+    ["40P01", "INTERLOCK_DEADLOCK"],
+    ["55P03", "INTERLOCK_LOCK_TIMEOUT"],
+    ["57014", "INTERLOCK_CANCELLED"],
+  ]) {
+    const failure = Object.assign(new Error(`PostgreSQL ${code}`), { code });
+    const client = {
+      on: () => undefined,
+      off: () => undefined,
+      query: async (sql) => {
+        if (sql.startsWith("BEGIN") || sql === "ROLLBACK")
+          return { rowCount: 0, rows: [] };
+        throw failure;
+      },
+      release: () => undefined,
+    };
+    const driver = new PostgresDriver({ connect: async () => client });
+    const fixture = executorFixture({ driver });
+    await assert.rejects(
+      fixture.subject.transition(transitionRequest),
+      (error) => isInterlockError(error) && error.code === expected,
+      code,
+    );
+  }
 });
 
 test("Interlock errors are recognizable across physical package copies", () => {
