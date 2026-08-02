@@ -70,8 +70,8 @@ export type Schema<Submitted, Parsed> =
   InputSchema<Submitted, Parsed> | StandardSchema<Submitted, Parsed>;
 
 /**
- * Full denial produced inside application policy. Private fields are retained
- * for application diagnostics and are not returned in public result values.
+ * Full denial accepted from application policy. Private fields are validated
+ * but intentionally omitted from public result values.
  */
 export interface InternalDenial {
   code: string;
@@ -95,7 +95,8 @@ export type Decision =
 export const allow = (): Decision => ({ allowed: true });
 /**
  * Returns a denied policy decision. Only `message` and `publicDetails` may be
- * exposed to callers; keep secrets in `privateMessage` or `privateDetails`.
+ * exposed to callers; `privateMessage` and `privateDetails` are never included
+ * in the returned public denial.
  */
 export const deny = (denial: InternalDenial): Decision => ({
   allowed: false,

@@ -38,8 +38,9 @@ export class InterlockError extends Error {
 }
 
 /**
- * The supported runtime check for Interlock failures. It remains reliable when
- * duplicated package copies or JavaScript realms make `instanceof` unreliable.
+ * The supported runtime check for Interlock failures. Unlike checking
+ * `instanceof InterlockError`, it remains reliable across duplicated physical
+ * copies of `@interlock/core` within the same JavaScript realm.
  */
 export function isInterlockError(value: unknown): value is InterlockError {
   if (!(value instanceof Error)) return false;
