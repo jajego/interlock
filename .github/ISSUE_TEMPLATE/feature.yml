@@ -1,0 +1,19 @@
+name: Focused improvement
+description: Propose a change within Interlock's documented product boundary
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: Concrete problem }
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes: { label: Smallest useful change }
+    validations: { required: true }
+  - type: textarea
+    id: boundary
+    attributes:
+      label: Product-boundary fit
+      description:
+        Explain why this is atomic transition recording, not workflow execution
+        or tooling.
+    validations: { required: true }

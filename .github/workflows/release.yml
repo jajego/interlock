@@ -1,0 +1,37 @@
+name: Release
+on: { workflow_dispatch: {} }
+permissions: { contents: write, id-token: write }
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: npm
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          {
+            POSTGRES_USER: interlock,
+            POSTGRES_PASSWORD: interlock,
+            POSTGRES_DB: interlock,
+          }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U interlock" --health-interval 2s
+          --health-timeout 3s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgres://interlock:interlock@localhost:5432/interlock
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: 11.9.0 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, registry-url: "https://registry.npmjs.org" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format
+      - run: pnpm lint
+      - run: pnpm check
+      - run: pnpm test:postgres
+      - run: pnpm pack:check
+      - run: pnpm --filter @interlock/prisma-postgres-spike generate
+      - run: pnpm --filter @interlock/prisma-postgres-spike start
+      - run: pnpm release

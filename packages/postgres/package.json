@@ -1,0 +1,54 @@
+{
+  "name": "@interlock/postgres",
+  "version": "0.1.0-alpha.0",
+  "description": "Reference PostgreSQL transaction driver for Interlock.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jajego/interlock.git",
+    "directory": "packages/postgres"
+  },
+  "bugs": {
+    "url": "https://github.com/jajego/interlock/issues"
+  },
+  "homepage": "https://github.com/jajego/interlock#readme",
+  "keywords": [
+    "postgresql",
+    "transactions",
+    "idempotency",
+    "outbox",
+    "optimistic-concurrency"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./migration.sql": "./migrations/001_interlock.sql"
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "migrations",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "dependencies": {
+    "@interlock/core": "workspace:^"
+  },
+  "peerDependencies": {
+    "pg": ">=8.16.3 <9"
+  },
+  "scripts": {
+    "build": "tsc -b"
+  }
+}

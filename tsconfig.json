@@ -1,0 +1,9 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/core" },
+    { "path": "packages/postgres" },
+    { "path": "packages/conformance" },
+    { "path": "examples/postgres-node" }
+  ]
+}

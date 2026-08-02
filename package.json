@@ -1,0 +1,31 @@
+{
+  "name": "interlock",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "tsc -b --clean",
+    "check": "pnpm build && pnpm typecheck && pnpm test",
+    "test": "node --test integration/core.test.mjs integration/conformance.test.mjs",
+    "typecheck": "tsc -p tsconfig.type-tests.json --pretty false",
+    "test:postgres": "node scripts/require-postgres.mjs && pnpm build && node --test integration/postgres.test.mjs",
+    "format": "prettier --check .",
+    "lint": "eslint .",
+    "pack:check": "node scripts/pack-check.mjs",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release": "changeset publish"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.7",
+    "@eslint/js": "^9.32.0",
+    "@types/node": "^22.17.0",
+    "@types/pg": "^8.15.5",
+    "eslint": "^9.32.0",
+    "prettier": "^3.6.2",
+    "pg": "^8.16.3",
+    "typescript": "^5.9.2",
+    "typescript-eslint": "^8.39.0"
+  }
+}
