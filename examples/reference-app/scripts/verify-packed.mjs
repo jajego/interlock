@@ -21,8 +21,16 @@ const temporary = mkdtempSync(join(tmpdir(), "interlock-reference-consumer-"));
 const consumer = join(temporary, "app");
 const pnpmCli = process.env.npm_execpath;
 assert.ok(pnpmCli, "Run through pnpm verify:packed");
+
+const pnpmCliIsJavaScript = /\.[cm]?js$/i.test(pnpmCli);
+
+const executePnpm = (arguments_, options = {}) =>
+  pnpmCliIsJavaScript
+    ? execFileSync(process.execPath, [pnpmCli, ...arguments_], options)
+    : execFileSync(pnpmCli, arguments_, options);
+
 const run = (arguments_, options = {}) =>
-  execFileSync(process.execPath, [pnpmCli, ...arguments_], {
+  executePnpm(arguments_, {
     cwd: consumer,
     stdio: "inherit",
     ...options,
@@ -37,7 +45,7 @@ databaseUrl.pathname = `/${databaseName}`;
 const admin = new pg.Pool({ connectionString: adminUrl.toString(), max: 1 });
 
 try {
-  execFileSync(process.execPath, [pnpmCli, "pack:check"], {
+  executePnpm(["pack:check"], {
     cwd: root,
     stdio: "inherit",
   });

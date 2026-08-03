@@ -20,8 +20,13 @@ const packs = join(root, ".packs");
 const temporary = mkdtempSync(join(tmpdir(), "interlock-pack-"));
 const pnpmCli = process.env.npm_execpath;
 assert.ok(pnpmCli, "Run this check through pnpm pack:check");
-const pnpm = (arguments_, options) =>
-  execFileSync(process.execPath, [pnpmCli, ...arguments_], options);
+
+const pnpmCliIsJavaScript = /\.[cm]?js$/i.test(pnpmCli);
+
+const pnpm = (arguments_, options = {}) =>
+  pnpmCliIsJavaScript
+    ? execFileSync(process.execPath, [pnpmCli, ...arguments_], options)
+    : execFileSync(pnpmCli, arguments_, options);
 
 const packages = {
   core: {
