@@ -282,21 +282,6 @@ switch (result.status) {
 Before opening a transaction, Interlock validates the command and computes its
 idempotency fingerprint.
 
-```mermaid
-flowchart LR
-  A["Validate command"] --> B["Begin transaction"]
-  B --> C["Claim idempotency"]
-  C --> D["Load and check resource"]
-  D --> E["Apply primary and append history"]
-  E --> F["Apply related writes and append outbox"]
-  F --> G["Complete idempotency"]
-  G --> H["Commit"]
-  C -. expected outcome .-> R["Rollback"]
-  D -. expected outcome .-> R
-  E -. failure .-> R
-  F -. failure .-> R
-```
-
 Inside one driver-owned transaction it:
 
 1. claims the idempotency key;
