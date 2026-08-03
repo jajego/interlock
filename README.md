@@ -10,7 +10,8 @@ Interlock gives important domain changes one dependable transaction boundary.
 Your version-checked resource update, related writes, append-only history,
 idempotency result, and outbox messages commit together or roll back together.
 
-> **Alpha:** Interlock alpha releases use the npm next tag. APIs may change before 1.0, with meaningful changes documented in the
+> **Alpha:** Interlock alpha releases use the npm next tag. APIs may change
+> before 1.0, with meaningful changes documented in the
 > [changelog](CHANGELOG.md).
 
 XState models complex statecharts. Temporal runs durable workflows. Interlock
