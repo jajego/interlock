@@ -113,10 +113,13 @@ hidden.
 The service also installs a real `InterlockObserver`. It writes frozen
 start/completed/failed summaries through Fastify's structured logger and records
 only low-cardinality lifecycle, event, mode, outcome, code, and phase dimensions
-in a tiny in-memory demonstration collector. It never logs request input,
-actors, resources, idempotency keys, fingerprints, or outbox payloads.
-Production applications should replace the collector with their existing metrics
-adapter, not add IDs as metric labels.
+in a tiny in-memory aggregation example. Repeated observations update counters
+and duration summaries keyed by bounded label combinations instead of retaining
+one object per request. Unknown caller-supplied event names aggregate under
+`__unknown__` for metrics while structured logs retain the original value. It
+never logs request input, actors, resources, idempotency keys, fingerprints, or
+outbox payloads. Production applications should replace the collector with their
+existing metrics adapter, not add IDs as metric labels.
 
 Prisma needs a custom driver because Interlock must use the same interactive
 transaction handle for application and artifact writes. Runtime code never opens

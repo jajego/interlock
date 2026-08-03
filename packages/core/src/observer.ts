@@ -28,6 +28,7 @@ interface InterlockOperationCompleted extends InterlockOperationBase {
     | "idempotency-conflict";
   readonly transitionId?: string;
   readonly durationMs: number;
+  /** Present only when the driver entered its transaction callback. */
   readonly transactionDurationMs?: number;
   readonly outboxMessageCount?: number;
 }
@@ -53,6 +54,7 @@ interface InterlockOperationFailed extends InterlockOperationBase {
     | "result";
   readonly commitOutcome: "not-started" | "not-committed" | "unknown";
   readonly durationMs: number;
+  /** Present only when the driver entered its transaction callback. */
   readonly transactionDurationMs?: number;
 }
 

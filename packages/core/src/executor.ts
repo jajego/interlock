@@ -52,6 +52,9 @@ import type {
 } from "./types.js";
 import { incrementVersion, parseVersionToken } from "./version.js";
 
+const monotonicNow = performance.now.bind(performance);
+const numberIsFinite = Number.isFinite;
+
 type EventName<Events> = Extract<keyof Events, string>;
 type CompletedObservation = Extract<
   InterlockObservation,
@@ -520,7 +523,7 @@ export function createInterlock<
     let startedAt: number;
     try {
       operationId = randomUUID();
-      startedAt = performance.now();
+      startedAt = monotonicNow();
     } catch {
       return undefined;
     }
@@ -553,11 +556,14 @@ export function createInterlock<
     if (observation) observation.phase = phase;
   };
   const duration = (startedAt: number) => {
-    const value = performance.now() - startedAt;
-    return Number.isFinite(value) && value >= 0 ? value : 0;
+    const value = monotonicNow() - startedAt;
+    return numberIsFinite(value) && value >= 0 ? value : 0;
   };
   const finishTransaction = (observation: ObservationState | undefined) => {
-    if (observation?.transactionStartedAt !== undefined)
+    if (
+      observation?.transactionStarted === true &&
+      observation.transactionStartedAt !== undefined
+    )
       observation.transactionDurationMs = duration(
         observation.transactionStartedAt,
       );
@@ -569,7 +575,7 @@ export function createInterlock<
   ): Promise<Result> => {
     setPhase(observation, "transaction");
     if (!observation) return driver.transaction(operation, transactionOptions);
-    observation.transactionStartedAt = performance.now();
+    observation.transactionStartedAt = monotonicNow();
     try {
       return await driver.transaction(async (transaction) => {
         if (observation) observation.transactionStarted = true;
@@ -646,6 +652,26 @@ export function createInterlock<
         ? {}
         : { transactionDurationMs: observation.transactionDurationMs }),
     });
+  };
+  const safelyCompleteObservation = (
+    observation: ObservationState | undefined,
+    result: AssessmentResult | TransitionResult<Resource>,
+  ): void => {
+    try {
+      completeObservation(observation, result);
+    } catch {
+      return;
+    }
+  };
+  const safelyFailObservation = (
+    observation: ObservationState | undefined,
+    error: InterlockError,
+  ): void => {
+    try {
+      failObservation(observation, error);
+    } catch {
+      return;
+    }
   };
   const staticConsistency =
     typeof binding.consistency === "function"
@@ -952,11 +978,11 @@ export function createInterlock<
     const observation = beginObservation(command, "assess");
     try {
       const result = await executeAssessment(command, observation);
-      completeObservation(observation, result);
+      safelyCompleteObservation(observation, result);
       return result;
     } catch (error) {
       const failure = unexpected(error);
-      failObservation(observation, failure);
+      safelyFailObservation(observation, failure);
       throw failure;
     }
   }
@@ -1069,11 +1095,11 @@ export function createInterlock<
     const observation = beginObservation(command, "transition");
     try {
       const result = await executeTransition(command, observation);
-      completeObservation(observation, result);
+      safelyCompleteObservation(observation, result);
       return result;
     } catch (error) {
       const failure = unexpected(error);
-      failObservation(observation, failure);
+      safelyFailObservation(observation, failure);
       throw failure;
     }
   }
@@ -1551,9 +1577,8 @@ export function createInterlock<
                 error,
               );
             }
-          } else {
-            setPhase(observation, "result");
           }
+          setPhase(observation, "result");
           const hydratedSnapshot = resourceSnapshot(
             hydrated,
             "Hydrated resource",

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { performance } from "node:perf_hooks";
 import process from "node:process";
 import { setImmediate } from "node:timers";
 import {
@@ -273,6 +274,7 @@ test("observer reports the stable failure phase for every protocol boundary", as
         }),
       }),
       commitOutcome: "not-started",
+      transactionDuration: false,
     },
     {
       phase: "idempotency",
@@ -435,6 +437,36 @@ test("observer reports final result validation after transactional writes", asyn
   assert.equal(observations[1].code, "INTERLOCK_BINDING_PROTOCOL_VIOLATION");
 });
 
+test("hydrated resource postconditions fail in the result phase", async () => {
+  for (const resource of [
+    { id: "wrong", state: "b", version: "2" },
+    { id: "item-1", state: "a", version: "2" },
+    { id: "item-1", state: "b", version: "1" },
+  ]) {
+    const observations = [];
+    const fixture = executorFixture({
+      hydrate: async () => resource,
+      observer: { observe: (value) => observations.push(value) },
+    });
+    const error = await rejection(
+      fixture.subject.transition(transitionRequest),
+    );
+    assert.equal(isInterlockError(error), true);
+    assert.deepEqual(
+      {
+        code: observations[1].code,
+        phase: observations[1].phase,
+        commitOutcome: observations[1].commitOutcome,
+      },
+      {
+        code: "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+        phase: "result",
+        commitOutcome: "not-committed",
+      },
+    );
+  }
+});
+
 test("unknown commit is a failed commit with an unknown outcome", async () => {
   const failure = new InterlockError(
     "INTERLOCK_COMMIT_OUTCOME_UNKNOWN",
@@ -463,6 +495,7 @@ test("unknown commit is a failed commit with an unknown outcome", async () => {
       commitOutcome: "unknown",
     },
   );
+  assert.equal(Number.isFinite(observations[1].transactionDurationMs), true);
 });
 
 test("observer callbacks always run outside the transaction", async () => {
@@ -560,6 +593,57 @@ test("observer exceptions never change results or suppress terminals", async () 
     "interlock.operation.started",
     "interlock.operation.failed",
   ]);
+});
+
+test("mutable timing globals cannot affect observed operations", async () => {
+  const originalNow = performance.now;
+  try {
+    const successful = [];
+    const successFixture = executorFixture({
+      observer: {
+        observe(observation) {
+          successful.push(observation);
+          if (observation.type === "interlock.operation.started")
+            performance.now = () => {
+              throw new Error("mutated clock");
+            };
+        },
+      },
+    });
+    const result = await successFixture.subject.transition(transitionRequest);
+    assert.equal(result.status, "committed");
+    assert.deepEqual(
+      successful.map((observation) => observation.type),
+      ["interlock.operation.started", "interlock.operation.completed"],
+    );
+
+    const failure = new InterlockError("INTERLOCK_CANCELLED", "cancelled");
+    const failed = [];
+    const failureFixture = executorFixture({
+      driver: transactionDriver(async () => {
+        throw failure;
+      }),
+      observer: {
+        observe(observation) {
+          failed.push(observation);
+          if (observation.type === "interlock.operation.started")
+            performance.now = () => {
+              throw new Error("mutated clock");
+            };
+        },
+      },
+    });
+    assert.equal(
+      await rejection(failureFixture.subject.transition(transitionRequest)),
+      failure,
+    );
+    assert.deepEqual(
+      failed.map((observation) => observation.type),
+      ["interlock.operation.started", "interlock.operation.failed"],
+    );
+  } finally {
+    performance.now = originalNow;
+  }
 });
 
 test("observer promise and thenable failures are consumed without waiting", async () => {

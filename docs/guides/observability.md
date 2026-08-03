@@ -32,6 +32,8 @@ Each callback receives a frozen, detached, plain-data object. Interlock invokes
 callbacks only outside its database transaction, ignores synchronous exceptions,
 never awaits returned promises or thenables, and consumes their rejections. A
 failed callback is not retried and does not produce another observation.
+Observation timing and terminal processing are also best-effort: telemetry
+machinery cannot replace a domain result or the original `InterlockError`.
 
 Synchronous work still adds caller-visible latency. An observer should enqueue,
 increment, or record lightweight in-process telemetry. It should not perform
@@ -97,10 +99,11 @@ it cannot change Interlock's result or prevent the terminal callback attempt.
 transition reports its planned `outboxMessageCount`, including zero. Duplicate
 replay does not claim knowledge of the original count.
 
-`transactionDurationMs` is present when the driver transaction call began and
-covers acquisition, execution, commit, or rollback. `durationMs` covers the
-whole observed operation. Both use a monotonic clock and are finite, nonnegative
-millisecond values.
+`transactionDurationMs` is absent unless the driver entered its transaction
+callback. When present, its measured interval starts at the driver transaction
+call and covers acquisition, execution, commit, or rollback. `durationMs` covers
+the whole observed operation. Both use a monotonic clock and are finite,
+nonnegative millisecond values.
 
 ## Operational failures
 
@@ -157,6 +160,11 @@ structured log or trace attributes when allowed by application policy. They are
 unbounded and must not be metric labels. Actor IDs and idempotency keys are not
 observed at all.
 
+Declared event names are bounded metric dimensions. An `unknown-event` result,
+however, contains the caller-supplied undeclared name and must be normalized to
+a stable fallback such as `__unknown__` before use as a metric label. Structured
+logs may retain the raw event name when the application's data policy allows it.
+
 Useful low-cardinality metrics include:
 
 ```text
@@ -179,6 +187,11 @@ interlock_history_insert_failure_total
 
 Those measurements come from the database or worker, not the observer. Interlock
 inserts outbox rows atomically but does not publish or monitor them.
+
+The reference application's collector is a small in-memory aggregation example.
+It stores one counter or duration summary per unique low-cardinality label
+combination rather than one object per request; production applications should
+adapt observations to their existing metrics backend.
 
 ## Tracing adapter
 

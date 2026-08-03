@@ -30,27 +30,89 @@ type FailureLabels = {
   >["phase"];
 };
 
+type OperationCount = {
+  labels: CompletedLabels;
+  count: number;
+};
+
+type DurationSummary = {
+  labels: Omit<CompletedLabels, "outcome">;
+  count: number;
+  totalMs: number;
+  maxMs: number;
+};
+
+type FailureCount = {
+  labels: FailureLabels;
+  count: number;
+};
+
+function metricEvent(observation: InterlockObservation): string {
+  return observation.type === "interlock.operation.completed" &&
+    observation.outcome === "unknown-event"
+    ? "__unknown__"
+    : observation.event;
+}
+
+/** Small bounded in-memory aggregation example, not a production metrics backend. */
 export class ReferenceMetrics {
-  readonly operations: CompletedLabels[] = [];
-  readonly durations: Array<
-    Omit<CompletedLabels, "outcome"> & { durationMs: number }
-  > = [];
-  readonly failures: FailureLabels[] = [];
+  readonly operationCounts = new Map<string, OperationCount>();
+  readonly durationSummaries = new Map<string, DurationSummary>();
+  readonly failureCounts = new Map<string, FailureCount>();
 
   recordCompleted(labels: CompletedLabels, durationMs: number): void {
-    this.operations.push(Object.freeze({ ...labels }));
-    this.durations.push(
-      Object.freeze({
-        mode: labels.mode,
-        lifecycle: labels.lifecycle,
-        event: labels.event,
-        durationMs,
-      }),
-    );
+    const operationKey = JSON.stringify([
+      labels.mode,
+      labels.lifecycle,
+      labels.event,
+      labels.outcome,
+    ]);
+    const operation = this.operationCounts.get(operationKey);
+    if (operation) operation.count += 1;
+    else
+      this.operationCounts.set(operationKey, {
+        labels: Object.freeze({ ...labels }),
+        count: 1,
+      });
+
+    const durationLabels = Object.freeze({
+      mode: labels.mode,
+      lifecycle: labels.lifecycle,
+      event: labels.event,
+    });
+    const durationKey = JSON.stringify([
+      durationLabels.mode,
+      durationLabels.lifecycle,
+      durationLabels.event,
+    ]);
+    const summary = this.durationSummaries.get(durationKey);
+    if (summary) {
+      summary.count += 1;
+      summary.totalMs += durationMs;
+      summary.maxMs = Math.max(summary.maxMs, durationMs);
+    } else
+      this.durationSummaries.set(durationKey, {
+        labels: durationLabels,
+        count: 1,
+        totalMs: durationMs,
+        maxMs: durationMs,
+      });
   }
 
   recordFailure(labels: FailureLabels): void {
-    this.failures.push(Object.freeze({ ...labels }));
+    const key = JSON.stringify([
+      labels.lifecycle,
+      labels.event,
+      labels.code,
+      labels.phase,
+    ]);
+    const failure = this.failureCounts.get(key);
+    if (failure) failure.count += 1;
+    else
+      this.failureCounts.set(key, {
+        labels: Object.freeze({ ...labels }),
+        count: 1,
+      });
   }
 }
 
@@ -64,17 +126,18 @@ export function createInterlockObserver(
         { category: "interlock", ...observation },
         "interlock operation",
       );
-      if (observation.type === "interlock.operation.completed")
+      if (observation.type === "interlock.operation.completed") {
+        const event = metricEvent(observation);
         metrics.recordCompleted(
           {
             mode: observation.mode,
             lifecycle: observation.lifecycle,
-            event: observation.event,
+            event,
             outcome: observation.outcome,
           },
           observation.durationMs,
         );
-      else if (observation.type === "interlock.operation.failed")
+      } else if (observation.type === "interlock.operation.failed")
         metrics.recordFailure({
           lifecycle: observation.lifecycle,
           event: observation.event,

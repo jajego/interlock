@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createApp } from "../src/app.js";
-import { ReferenceMetrics } from "../src/interlock/observer.js";
+import {
+  createInterlockObserver,
+  ReferenceMetrics,
+} from "../src/interlock/observer.js";
 import {
   actors,
   counts,
@@ -69,19 +72,23 @@ test("reference observer logs committed, duplicate, and denied outcomes safely",
       JSON.stringify(completed),
       /request-secret|denied-secret|observer-key/,
     );
+    const operationCounts = [...metrics.operationCounts.values()];
     assert.deepEqual(
-      metrics.operations.map((value) => value.outcome),
+      operationCounts.map((value) => value.labels.outcome),
       ["committed", "duplicate", "denied"],
     );
-    for (const labels of [...metrics.operations, ...metrics.durations]) {
+    for (const { labels, count } of operationCounts) {
+      assert.equal(count, 1);
       assert.deepEqual(
         Object.keys(labels).sort(),
-        ("outcome" in labels
-          ? ["event", "lifecycle", "mode", "outcome"]
-          : ["durationMs", "event", "lifecycle", "mode"]
-        ).sort(),
+        ["event", "lifecycle", "mode", "outcome"].sort(),
       );
     }
+    for (const summary of metrics.durationSummaries.values())
+      assert.deepEqual(
+        Object.keys(summary.labels).sort(),
+        ["event", "lifecycle", "mode"].sort(),
+      );
   } finally {
     await app.close();
   }
@@ -106,22 +113,146 @@ test("reference observer logs operational code and phase", async () => {
       payload: {},
     });
     assert.equal(response.statusCode, 500);
+    assert.equal(
+      (
+        await app.inject({
+          method: "POST",
+          url: `/permits/${row.id}/events/submit`,
+          headers: headers(
+            actors.applicant,
+            String(row.version),
+            "failure-key",
+          ),
+          payload: {},
+        })
+      ).statusCode,
+      500,
+    );
     const failed = captured
       .observations()
       .find((value) => value.type === "interlock.operation.failed");
     assert.equal(failed?.code, "INTERLOCK_PERSISTENCE_FAILED");
     assert.equal(failed?.phase, "primary-write");
-    assert.deepEqual(metrics.failures, [
-      {
-        lifecycle: "permit",
-        event: "submit",
-        code: "INTERLOCK_PERSISTENCE_FAILED",
-        phase: "primary-write",
-      },
-    ]);
+    assert.deepEqual(
+      [...metrics.failureCounts.values()],
+      [
+        {
+          labels: {
+            lifecycle: "permit",
+            event: "submit",
+            code: "INTERLOCK_PERSISTENCE_FAILED",
+            phase: "primary-write",
+          },
+          count: 2,
+        },
+      ],
+    );
   } finally {
     await app.close();
   }
+});
+
+test("reference metrics aggregate bounded labels and normalize unknown events", () => {
+  const logs: Record<string, unknown>[] = [];
+  const metrics = new ReferenceMetrics();
+  const observer = createInterlockObserver(
+    { info: (fields) => logs.push(fields) },
+    metrics,
+  );
+  const base = {
+    lifecycle: "permit",
+    resourceId: "high-cardinality-resource",
+    mode: "transition" as const,
+    correlationId: "high-cardinality-correlation",
+  };
+  for (const durationMs of [2, 3])
+    observer.observe({
+      ...base,
+      type: "interlock.operation.completed",
+      operationId: `operation-${durationMs}`,
+      event: "submit",
+      outcome: "committed",
+      transitionId: `transition-${durationMs}`,
+      durationMs,
+      outboxMessageCount: 0,
+    });
+  for (const [index, event] of [
+    "caller-event-one",
+    "caller-event-two",
+  ].entries())
+    observer.observe({
+      ...base,
+      type: "interlock.operation.completed",
+      operationId: `unknown-${index}`,
+      event,
+      outcome: "unknown-event",
+      durationMs: 1,
+    });
+  for (const operationId of ["failed-one", "failed-two"])
+    observer.observe({
+      ...base,
+      type: "interlock.operation.failed",
+      operationId,
+      event: "submit",
+      code: "INTERLOCK_PERSISTENCE_FAILED",
+      phase: "primary-write",
+      commitOutcome: "not-committed",
+      durationMs: 1,
+    });
+
+  assert.deepEqual(
+    logs.slice(2, 4).map((entry) => entry.event),
+    ["caller-event-one", "caller-event-two"],
+  );
+  assert.equal(metrics.operationCounts.size, 2);
+  assert.equal(metrics.durationSummaries.size, 2);
+  assert.equal(metrics.failureCounts.size, 1);
+  const committed = [...metrics.operationCounts.values()].find(
+    ({ labels }) => labels.outcome === "committed",
+  );
+  assert.equal(committed?.count, 2);
+  const committedDuration = [...metrics.durationSummaries.values()].find(
+    ({ labels }) => labels.event === "submit",
+  );
+  assert.deepEqual(
+    committedDuration && {
+      count: committedDuration.count,
+      totalMs: committedDuration.totalMs,
+      maxMs: committedDuration.maxMs,
+    },
+    { count: 2, totalMs: 5, maxMs: 3 },
+  );
+  const unknown = [...metrics.operationCounts.values()].find(
+    ({ labels }) => labels.outcome === "unknown-event",
+  );
+  assert.equal(unknown?.labels.event, "__unknown__");
+  assert.equal(unknown?.count, 2);
+  const unknownDuration = [...metrics.durationSummaries.values()].find(
+    ({ labels }) => labels.event === "__unknown__",
+  );
+  assert.deepEqual(
+    unknownDuration && {
+      count: unknownDuration.count,
+      totalMs: unknownDuration.totalMs,
+      maxMs: unknownDuration.maxMs,
+    },
+    { count: 2, totalMs: 2, maxMs: 1 },
+  );
+  assert.equal([...metrics.failureCounts.values()][0]?.count, 2);
+  for (const entry of [
+    ...metrics.operationCounts.values(),
+    ...metrics.durationSummaries.values(),
+    ...metrics.failureCounts.values(),
+  ])
+    assert.deepEqual(
+      Object.keys(entry.labels).sort(),
+      ("outcome" in entry.labels
+        ? ["event", "lifecycle", "mode", "outcome"]
+        : "mode" in entry.labels
+          ? ["event", "lifecycle", "mode"]
+          : ["code", "event", "lifecycle", "phase"]
+      ).sort(),
+    );
 });
 
 test("reference observer failure cannot change HTTP or committed state", async () => {
