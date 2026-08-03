@@ -1,6 +1,6 @@
 # Performance notes
 
-This is a maintainer-facing record for `0.1.0-alpha.0`, not a product latency
+This is a maintainer-facing record for `0.1.0-alpha.1`, not a product latency
 guarantee. Interlock keeps all protocol checks enabled during measurement.
 
 ## Methodology

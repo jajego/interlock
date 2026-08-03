@@ -9,7 +9,7 @@ const packages = {
   postgres: "@jajego/interlock-postgres",
   conformance: "@jajego/interlock-conformance",
 };
-const releaseDate = "2026-08-02";
+const releaseDate = "2026-08-03";
 const repository = "git+https://github.com/jajego/interlock.git";
 const approvedActions = new Set([
   "actions/checkout@v6",

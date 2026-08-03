@@ -1,6 +1,6 @@
 {
   "name": "@jajego/interlock-conformance",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Executable driver, binding, and executor verification suites for Interlock integrations.",
   "type": "module",
   "license": "Apache-2.0",

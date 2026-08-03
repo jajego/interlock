@@ -1,6 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.1.0-alpha.1 — 2026-08-03
+
+### Changed
+
+- Clarified the relationship between the core, PostgreSQL, and conformance
+  packages.
+- Made the recommended PostgreSQL installation command consistent across the
+  repository and npm package documentation.
+- Clarified when to install the core package by itself.
 
 ## 0.1.0-alpha.0 — 2026-08-02
 

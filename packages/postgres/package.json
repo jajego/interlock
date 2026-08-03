@@ -1,6 +1,6 @@
 {
   "name": "@jajego/interlock-postgres",
-  "version": "0.1.0-alpha.0",
+  "version": "0.1.0-alpha.1",
   "description": "Reference PostgreSQL transaction driver for Interlock.",
   "type": "module",
   "license": "Apache-2.0",

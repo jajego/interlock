@@ -462,7 +462,7 @@ are not. Caller-initiated retries may evaluate them again.
 
 ## Compatibility
 
-The `0.1.0-alpha.0` release tests:
+The `0.1.0-alpha.1` release tests:
 
 - Node.js 22.14+ and 26;
 - TypeScript 5.0+;

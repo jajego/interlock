@@ -2,7 +2,7 @@
 
 ## First alpha
 
-`0.1.0-alpha.0` is already versioned in every package and documented in the
+`0.1.0-alpha.1` is already versioned in every package and documented in the
 changelog. Its incorporated work must not have a pending Changeset. Run the
 entire local quality matrix, inspect `pnpm pack:check`, and publish through the
 protected workflow with the npm `next` tag. Do not use `latest` or run

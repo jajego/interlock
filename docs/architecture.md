@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the implemented `0.1.0-alpha.0` protocol. The current
+This document describes the implemented `0.1.0-alpha.1` protocol. The current
 code and tests are authoritative; this document explains their intended shape.
 
 ## Product boundary
