@@ -389,7 +389,6 @@ an unproved concurrency algorithm.
 ## Examples and guides
 
 - [Production-style Fastify + Prisma reference app](examples/reference-app/README.md)
-- [Reference-app DX findings](examples/reference-app/docs/dx-findings.md)
 - [Reference benchmark methodology](examples/reference-app/docs/benchmark-methodology.md)
 - [Runnable PostgreSQL example](examples/postgres-node/README.md)
 - [PostgreSQL integration guide](docs/guides/postgres.md)
@@ -459,5 +458,4 @@ Benchmark methodology and current maintainer measurements are recorded in
 [docs/performance.md](docs/performance.md). Local Docker loopback results are
 not production latency guarantees.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution expectations and
-[LAUNCH.md](LAUNCH.md) for the alpha release checklist.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution expectations.

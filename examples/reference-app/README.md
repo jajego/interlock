@@ -130,5 +130,5 @@ acknowledgement fails, so delivery is at-least-once. Production dispatchers
 commonly use a lease/claim design; this compact worker demonstrates exclusion
 and retryability, not distributed delivery architecture.
 
-See [DX findings](docs/dx-findings.md) and
-[benchmark methodology](docs/benchmark-methodology.md).
+See the [benchmark methodology](docs/benchmark-methodology.md) for measurement
+details and reproduction steps.

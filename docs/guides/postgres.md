@@ -21,8 +21,7 @@ custom `TransactionDriver`; the Prisma spike is a copyable proof, not a drop-in
 adapter.
 
 For a complete application integration, see the committed
-[Fastify + Prisma reference app](../../examples/reference-app/README.md), its
-[DX findings](../../examples/reference-app/docs/dx-findings.md), and
+[Fastify + Prisma reference app](../../examples/reference-app/README.md) and its
 [benchmark methodology](../../examples/reference-app/docs/benchmark-methodology.md).
 
 Prefer a conditional `UPDATE ... RETURNING` that returns the committed resource
