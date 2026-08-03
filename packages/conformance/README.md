@@ -1,5 +1,11 @@
 # `@jajego/interlock-conformance`
 
+Development-time verification for custom transaction-driver authors, resource-
+binding authors, and integration maintainers. Ordinary application consumers do
+not need this package.
+
+## Install
+
 ```sh
 npm install --save-dev @jajego/interlock-conformance@next
 ```

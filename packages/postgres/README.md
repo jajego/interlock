@@ -1,14 +1,18 @@
 # `@jajego/interlock-postgres`
 
 Reference `pg` transaction driver plus the versioned Interlock idempotency,
-history, and outbox schema. Apply the exported `migration.sql` before use.
+history, and outbox schema. It works alongside the core package. Apply the
+exported `migration.sql` before use.
+
+## Install
 
 ```sh
-pnpm add @jajego/interlock@next @jajego/interlock-postgres@next pg
+npm install @jajego/interlock@next @jajego/interlock-postgres@next pg
 ```
 
 Applications create the `pg` `Pool` and pass it to `new PostgresDriver(pool)`;
-`pg` is a peer dependency so Interlock shares the application's pool package.
+`pg` is installed explicitly because it is the PostgreSQL client and peer
+dependency. Interlock does not bundle `pg`, create a pool, or own connections.
 
 ```ts
 import { readFile } from "node:fs/promises";

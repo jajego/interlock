@@ -1,7 +1,19 @@
 # `@jajego/interlock`
 
 Defines typed lifecycle events and executes one atomic transition through an
-application binding and transaction driver. It has no runtime dependencies.
+application binding and transaction driver. `@jajego/interlock` contains the
+database-neutral transition protocol and public TypeScript API. It has no
+runtime dependencies and does not open database connections.
+
+## Install
+
+For the first-party PostgreSQL integration:
+
+```sh
+npm install @jajego/interlock@next @jajego/interlock-postgres@next pg
+```
+
+Install the core package alone when supplying another transaction driver:
 
 ```sh
 npm install @jajego/interlock@next

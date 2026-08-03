@@ -31,3 +31,7 @@ checks before `changeset publish --tag next`.
 
 Never publish from an unreviewed local working tree. A release must use the
 protected workflow and an immutable commit whose CI checks passed.
+
+Interlock is published on npmjs.com. GitHub's **Packages** repository sidebar
+refers to GitHub Packages, a separate registry, and is not populated by
+npmjs.com releases.

@@ -20,6 +20,14 @@ atomically in PostgreSQL. Use it for approvals, account status changes, order
 progression, publishing flows, fulfillment steps, and other business transitions
 where a partial write would be expensive or difficult to repair.
 
+## Packages
+
+| Package                                                                                        | Purpose                                                                                                |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| [`@jajego/interlock`](https://www.npmjs.com/package/@jajego/interlock)                         | Database-neutral lifecycle definitions, transition execution, public types, errors, and observability. |
+| [`@jajego/interlock-postgres`](https://www.npmjs.com/package/@jajego/interlock-postgres)       | First-party PostgreSQL transaction driver and versioned migration.                                     |
+| [`@jajego/interlock-conformance`](https://www.npmjs.com/package/@jajego/interlock-conformance) | Development-time verification suites for custom drivers and resource bindings.                         |
+
 ## Why Interlock?
 
 - **Atomic by design:** application writes, history, idempotency, and outbox
@@ -51,8 +59,28 @@ where a partial write would be expensive or difficult to repair.
 npm install @jajego/interlock@next @jajego/interlock-postgres@next pg
 ```
 
-Your application owns the `pg` `Pool`. The PostgreSQL package imports `pg` only
-as a type and declares it as a peer dependency.
+`@jajego/interlock` provides the core transition protocol and TypeScript API,
+`@jajego/interlock-postgres` adds the first-party driver and migration, and `pg`
+provides the application-owned PostgreSQL client and connection pool. The
+PostgreSQL integration declares `pg` as a peer dependency and never bundles or
+creates the application's pool.
+
+### Core only
+
+Install the core package by itself when providing another transaction driver:
+
+```sh
+npm install @jajego/interlock@next
+```
+
+### Integration verification
+
+Driver and binding authors can install the optional conformance suites as a
+development dependency:
+
+```sh
+npm install --save-dev @jajego/interlock-conformance@next
+```
 
 ## Integration requirements
 
@@ -389,14 +417,6 @@ targets clean installations and does not upgrade older incompatible schemas.
 Idempotent transitions are supported at `read committed` isolation. Interlock
 rejects higher isolation levels for idempotent commands rather than advertising
 an unproved concurrency algorithm.
-
-## Packages
-
-| Package                                                 | Purpose                                                                 |
-| ------------------------------------------------------- | ----------------------------------------------------------------------- |
-| [`@jajego/interlock`](packages/core)                    | Lifecycle definitions, typed commands, execution, and public contracts. |
-| [`@jajego/interlock-postgres`](packages/postgres)       | Reference `pg` transaction driver and SQL migration.                    |
-| [`@jajego/interlock-conformance`](packages/conformance) | Executable verification for drivers, bindings, and atomic rollback.     |
 
 ## Examples and guides
 
