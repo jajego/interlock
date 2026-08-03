@@ -24,7 +24,7 @@ Changesets before publication. Prereleases continue on `next`; publishing a
 stable version on `latest` is a later, explicit maintainer decision that also
 requires updating the release command.
 
-Confirm ownership and 2FA for the npm `@interlock` scope before configuring the
+Confirm ownership and 2FA for the npm `@jajego` scope before configuring the
 protected `npm` GitHub environment. The release workflow repeats format, lint,
 build, type, PostgreSQL, packaging, Prisma shared-handle, and release-state
 checks before `changeset publish --tag next`.

@@ -28,8 +28,8 @@ outbox publisher, retry worker, or statechart engine.
 - `docs/architecture.md` describes protocol design.
 - `docs/errors.md` defines operational error handling.
 - `docs/performance.md` records measured performance behavior.
-
-Documents under `docs/archive/` are historical and non-normative.
+- `docs/guides/observability.md` defines operational telemetry and durable
+  auditing boundaries.
 
 ## Lifecycle model
 
@@ -146,6 +146,25 @@ Outbox insertion is atomic; delivery, retries, leasing, and publication are
 application responsibilities. History is append-only by protocol. Database-level
 immutability requires privileges or additional database controls that deny
 updates and deletes.
+
+History records committed transitions only. It contains transition, lifecycle,
+resource, event, state, version, actor identity, projected audit and metadata,
+correlation, causation, idempotency, definition-version, and occurrence fields.
+It does not automatically retain raw request input or failed, denied, invalid,
+or conflicting attempts. Interlock is not an event store and does not provide
+tamper-evident signatures or retention management.
+
+## Operational observations
+
+An optional observer receives one start and one attempted terminal observation
+for each safely identified public operation. Expected outcomes complete;
+operational exceptions fail with a stable code, phase, and known or unknown
+commit outcome. Total and driver-transaction durations use a monotonic clock.
+
+Observer callbacks run before transaction acquisition or after transaction
+completion, never while the Interlock transaction is active. They receive only
+explicitly allowlisted structural metadata. Delivery is best-effort, never
+awaited, non-durable, and cannot alter results or rollback behavior.
 
 ## ORM transaction ownership
 

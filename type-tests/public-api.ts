@@ -8,6 +8,8 @@ import {
   type ClientFor,
   type InputSchema,
   type InterlockClient,
+  type InterlockObservation,
+  type InterlockObserver,
   type MutationMap,
   type PublicDenial,
   type ResourceBinding,
@@ -67,6 +69,44 @@ const lifecycle = defineLifecycle<Resource, Actor, Context>()({
 
 declare const driver: TransactionDriver<object>;
 
+const observer: InterlockObserver = {
+  observe(observation) {
+    switch (observation.type) {
+      case "interlock.operation.started":
+        void observation.operationId;
+        // @ts-expect-error started observations have no outcome
+        void observation.outcome;
+        // @ts-expect-error raw input is never observed
+        void observation.input;
+        break;
+      case "interlock.operation.completed":
+        void observation.outcome;
+        void observation.transitionId;
+        void observation.outboxMessageCount;
+        // @ts-expect-error completed observations have no error code
+        void observation.code;
+        // @ts-expect-error resources are never observed
+        void observation.resource;
+        break;
+      case "interlock.operation.failed":
+        void observation.code;
+        void observation.phase;
+        void observation.commitOutcome;
+        // @ts-expect-error raw errors are never observed
+        void observation.error;
+        // @ts-expect-error payloads are never observed
+        void observation.payload;
+        break;
+      default: {
+        const exhaustive: never = observation;
+        void exhaustive;
+      }
+    }
+  },
+};
+declare const observation: InterlockObservation;
+void observation.lifecycle;
+
 const binding: BindingFor<object, typeof lifecycle> = {
   loadPrimary: async (_transaction, operation) => {
     void operation.actor.tenantId;
@@ -106,7 +146,7 @@ const binding: BindingFor<object, typeof lifecycle> = {
   consistency: primaryRowOnly,
 };
 
-const client = createInterlock({ lifecycle, binding, driver });
+const client = createInterlock({ lifecycle, binding, driver, observer });
 const named: InterlockClient<Resource, Actor, typeof lifecycle.events> = client;
 const derived: ClientFor<typeof lifecycle> = client;
 void derived;

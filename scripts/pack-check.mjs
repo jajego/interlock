@@ -32,6 +32,7 @@ const packages = {
       "index",
       "json",
       "lifecycle",
+      "observer",
       "protocol",
       "request",
       "types",
@@ -129,14 +130,39 @@ try {
     `import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-await Promise.all([import("@jajego/interlock"), import("@jajego/interlock-postgres"), import("@jajego/interlock-conformance")]);
+import { createInterlock, defineLifecycle, primaryRowOnly } from "@jajego/interlock";
+await Promise.all([import("@jajego/interlock-postgres"), import("@jajego/interlock-conformance")]);
 const migration = await readFile(fileURLToPath(import.meta.resolve("@jajego/interlock-postgres/migration.sql")), "utf8");
 assert.match(migration, /CREATE TABLE IF NOT EXISTS interlock_transition_history/);
+const observations = [];
+const lifecycle = defineLifecycle()({ name: "packed", states: ["a", "b"], history: { resourceType: "item" }, events: { move: { from: ["a"], to: "b" } } });
+const client = createInterlock({
+  lifecycle,
+  observer: { observe: (observation) => observations.push(observation) },
+  driver: {
+    transaction: (operation) => operation({}),
+    claimIdempotency: async () => ({ status: "claimed" }),
+    completeIdempotency: async () => {},
+    insertTransition: async () => {},
+    insertOutbox: async () => {},
+  },
+  binding: {
+    loadPrimary: async () => ({ id: "item-1", state: "a", version: "1" }),
+    getId: (resource) => resource.id,
+    getState: (resource) => resource.state,
+    getVersion: (resource) => resource.version,
+    applyPrimary: async (_transaction, args) => ({ status: "applied", resource: { ...args.resource, state: "b", version: "2" } }),
+    consistency: primaryRowOnly,
+  },
+});
+const result = await client.transition({ id: "item-1", event: "move", expectedVersion: "1" });
+assert.equal(result.status, "committed");
+assert.deepEqual(observations.map((observation) => observation.type), ["interlock.operation.started", "interlock.operation.completed"]);
 `,
   );
   writeFileSync(
     join(temporary, "verify.ts"),
-    'import { PostgresDriver } from "@jajego/interlock-postgres";\nimport { Pool } from "pg";\nnew PostgresDriver(new Pool());\n',
+    'import type { InterlockObservation, InterlockObserver } from "@jajego/interlock";\nimport { PostgresDriver } from "@jajego/interlock-postgres";\nimport { Pool } from "pg";\nconst observer: InterlockObserver = { observe(observation) { if (observation.type === "interlock.operation.completed") void observation.outcome; if (observation.type === "interlock.operation.failed") void observation.phase; } };\ndeclare const observation: InterlockObservation;\nvoid observer; void observation.operationId;\nnew PostgresDriver(new Pool());\n',
   );
   copyFileSync(
     join(root, "examples", "postgres-node", "src", "index.ts"),

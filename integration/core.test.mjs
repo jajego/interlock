@@ -23,6 +23,7 @@ import {
 } from "./core/fixture.mjs";
 import "./core/protocol-boundaries.test.mjs";
 import "./core/lifecycle-boundaries.test.mjs";
+import "./core/observer.test.mjs";
 
 test("version tokens reject unsafe counters and increment PostgreSQL BIGINT values", () => {
   assert.equal(parseVersionToken("0").success, false);

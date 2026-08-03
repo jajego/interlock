@@ -29,3 +29,7 @@
 - Replaced the stale root design proposal with maintained alpha architecture
   documentation and added focused public API hover documentation across the
   core, PostgreSQL, and conformance packages.
+- Added an optional dependency-free, best-effort observer API with
+  started/completed/failed observations, expected-outcome and failure-phase
+  metadata, and monotonic total and transaction durations. Durable transition
+  history remains limited to committed transitions and no schema changed.

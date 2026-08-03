@@ -14,8 +14,15 @@ import {
   defineLifecycle,
   type BindingFor,
   type InputSchema,
+  type InterlockObserver,
   type TransactionDriver,
 } from "@jajego/interlock";
+
+const observer: InterlockObserver = {
+  observe(observation) {
+    console.info(observation);
+  },
+};
 
 interface Order {
   id: string;
@@ -69,7 +76,7 @@ function createOrderClient<Transaction>(
   binding: BindingFor<Transaction, typeof lifecycle>,
   driver: TransactionDriver<Transaction>,
 ) {
-  return createInterlock({ lifecycle, binding, driver });
+  return createInterlock({ lifecycle, binding, driver, observer });
 }
 ```
 
@@ -90,6 +97,13 @@ and `ClientFor<typeof lifecycle>` at service boundaries.
 applies the primary compare-and-swap update, and writes history, outbox, and
 idempotency records through the supplied driver. `assess()` is advisory and
 read-only. Node.js 22.14 or newer is supported.
+
+The optional observer emits frozen structural start, completed, and failed
+observations outside the transaction. Delivery is best-effort: Interlock never
+awaits it and ignores exceptions and rejected promises. It is operational
+telemetry, not durable audit history, and includes no raw input, actor,
+resource, payload, or error values. See the
+[observability guide](https://github.com/jajego/interlock/blob/main/docs/guides/observability.md).
 
 See the [repository README](https://github.com/jajego/interlock#readme) for the
 complete transaction protocol, runnable PostgreSQL example, guarantees, and

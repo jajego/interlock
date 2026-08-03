@@ -344,6 +344,33 @@ Historical duplicate edges are validated as stored history, not against the
 current lifecycle graph, so a deployment may evolve an event without breaking
 replay of an already committed key.
 
+## Observability
+
+Interlock durably audits committed transitions. An optional `InterlockObserver`
+reports operation starts, expected outcomes, duplicate replay, operational
+failures, failure phases, and total and transaction duration.
+
+```ts
+import type { InterlockObserver } from "@jajego/interlock";
+
+const observer: InterlockObserver = {
+  observe(observation) {
+    telemetry.record(observation);
+  },
+};
+
+const client = createInterlock({ lifecycle, binding, driver, observer });
+```
+
+Observer delivery is best-effort and never runs inside the Interlock-owned
+transaction. Exceptions and rejected promises are ignored, and no logger,
+metrics library, tracing SDK, or telemetry backend is bundled. Keep callbacks
+lightweight because synchronous work still adds caller-visible latency.
+
+See the [observability guide](docs/guides/observability.md) for exact event
+shapes, outcome and phase mappings, safe metric labels, tracing adapters, and
+the boundary between operational telemetry and durable audit history.
+
 ## PostgreSQL setup
 
 `@jajego/interlock-postgres/migration.sql` creates the idempotency,
@@ -392,6 +419,7 @@ an unproved concurrency algorithm.
 - [Reference benchmark methodology](examples/reference-app/docs/benchmark-methodology.md)
 - [Runnable PostgreSQL example](examples/postgres-node/README.md)
 - [PostgreSQL integration guide](docs/guides/postgres.md)
+- [Observability and durable auditing](docs/guides/observability.md)
 - [Idempotency model](docs/concepts/idempotency.md)
 - [Architecture and transaction protocol](docs/architecture.md)
 - [Error-code reference](docs/errors.md)

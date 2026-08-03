@@ -50,7 +50,12 @@ that table. Outbox rows are inserted in parameterized batches of up to 500 to
 limit database round trips without approaching PostgreSQL's parameter limit.
 Node.js 22.14 or newer and `pg` 8.16.3 through 8.x are supported.
 
+The core package's optional observer reports operation and transaction timing
+outside the database transaction. PostgreSQL queue depth, oldest pending outbox
+age, and database health remain application-owned measurements. See the
+[observability guide](https://github.com/jajego/interlock/blob/main/docs/guides/observability.md).
+
 See the committed
 [Fastify + Prisma reference application](https://github.com/jajego/interlock/tree/main/examples/reference-app)
-for an ORM-owned transaction example, DX findings, and measured limitations. It
-is not a published adapter.
+for an ORM-owned transaction example and measured limitations. It is not a
+published adapter.

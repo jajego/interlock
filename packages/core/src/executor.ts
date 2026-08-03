@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { InterlockError, isInterlockError } from "./errors.js";
+import type { InterlockObservation, InterlockObserver } from "./observer.js";
 import type {
   EventMap,
   EventSchemaMap,
@@ -51,6 +53,27 @@ import type {
 import { incrementVersion, parseVersionToken } from "./version.js";
 
 type EventName<Events> = Extract<keyof Events, string>;
+type CompletedObservation = Extract<
+  InterlockObservation,
+  { type: "interlock.operation.completed" }
+>;
+type FailedObservation = Extract<
+  InterlockObservation,
+  { type: "interlock.operation.failed" }
+>;
+type ObservationPhase = FailedObservation["phase"];
+type ObservationState = {
+  readonly base: Omit<
+    Extract<InterlockObservation, { type: "interlock.operation.started" }>,
+    "type"
+  >;
+  readonly startedAt: number;
+  phase: ObservationPhase;
+  transactionStarted: boolean;
+  transactionStartedAt?: number;
+  transactionDurationMs?: number;
+  outboxMessageCount?: number;
+};
 
 /** Typed advisory and authoritative operations for one lifecycle binding. */
 export interface InterlockClient<
@@ -211,6 +234,12 @@ export function createInterlock<
   ids?: () => string;
   now?: () => Date;
   maxOutboxPayloadBytes?: number;
+  /**
+   * Best-effort structural telemetry called outside the transaction. Interlock
+   * never awaits it and ignores exceptions and rejections; synchronous work
+   * adds latency and observations are not durable audit records.
+   */
+  observer?: InterlockObserver;
 }): InterlockClient<
   Resource,
   Actor,
@@ -228,6 +257,7 @@ export function createInterlock<
   const idsValue = options.ids;
   const nowValue = options.now;
   const maxOutboxPayloadBytesValue = options.maxOutboxPayloadBytes;
+  const observerValue = options.observer;
   const lifecycleName = record(lifecycleValue)
     ? lifecycleValue.name
     : undefined;
@@ -358,6 +388,17 @@ export function createInterlock<
       "INTERLOCK_DEFINITION_INVALID",
       "Maximum outbox payload size must be a positive integer.",
     );
+  const observeValue = record(observerValue)
+    ? observerValue.observe
+    : undefined;
+  if (
+    observerValue !== undefined &&
+    (!record(observerValue) || typeof observeValue !== "function")
+  )
+    throw new InterlockError(
+      "INTERLOCK_DEFINITION_INVALID",
+      "Observer must provide an observe() method.",
+    );
   const lifecycle = Object.freeze({
     name: lifecycleName,
     definitionVersion: lifecycleValue.definitionVersion,
@@ -429,6 +470,183 @@ export function createInterlock<
   const ids = (idsValue as (() => string) | undefined) ?? randomUUID;
   const now = (nowValue as (() => Date) | undefined) ?? (() => new Date());
   const maxOutboxPayloadBytes = maxOutboxPayloadBytesValue ?? 256_000;
+  const observe =
+    observerValue === undefined
+      ? undefined
+      : (bindMethod(observeValue, observerValue) as (
+          observation: InterlockObservation,
+        ) => unknown);
+  const emit = (observation: InterlockObservation) => {
+    if (!observe) return;
+    let returned: unknown;
+    try {
+      returned = observe(Object.freeze(observation));
+    } catch {
+      return;
+    }
+    if (
+      (typeof returned !== "object" || returned === null) &&
+      typeof returned !== "function"
+    )
+      return;
+    let then: unknown;
+    try {
+      then = (returned as { then?: unknown }).then;
+    } catch {
+      return;
+    }
+    if (typeof then !== "function") return;
+    try {
+      then.call(
+        returned,
+        () => {},
+        () => {},
+      );
+    } catch {
+      return;
+    }
+  };
+  const beginObservation = (
+    command: SnapshotRequest<Actor>,
+    mode: "assess" | "transition",
+  ): ObservationState | undefined => {
+    if (
+      !observe ||
+      typeof command.id !== "string" ||
+      typeof command.event !== "string"
+    )
+      return undefined;
+    let operationId: string;
+    let startedAt: number;
+    try {
+      operationId = randomUUID();
+      startedAt = performance.now();
+    } catch {
+      return undefined;
+    }
+    const base = Object.freeze({
+      operationId,
+      mode,
+      lifecycle: lifecycle.name,
+      resourceId: command.id,
+      event: command.event,
+      ...(command.correlationId === undefined
+        ? {}
+        : { correlationId: command.correlationId }),
+      ...(command.causationId === undefined
+        ? {}
+        : { causationId: command.causationId }),
+    });
+    const state: ObservationState = {
+      base,
+      startedAt,
+      phase: "request",
+      transactionStarted: false,
+    };
+    emit({ type: "interlock.operation.started", ...base });
+    return state;
+  };
+  const setPhase = (
+    observation: ObservationState | undefined,
+    phase: ObservationPhase,
+  ) => {
+    if (observation) observation.phase = phase;
+  };
+  const duration = (startedAt: number) => {
+    const value = performance.now() - startedAt;
+    return Number.isFinite(value) && value >= 0 ? value : 0;
+  };
+  const finishTransaction = (observation: ObservationState | undefined) => {
+    if (observation?.transactionStartedAt !== undefined)
+      observation.transactionDurationMs = duration(
+        observation.transactionStartedAt,
+      );
+  };
+  const runTransaction = async <Result>(
+    observation: ObservationState | undefined,
+    operation: (transaction: Transaction) => Promise<Result>,
+    transactionOptions: TransactionOptions,
+  ): Promise<Result> => {
+    setPhase(observation, "transaction");
+    if (!observation) return driver.transaction(operation, transactionOptions);
+    observation.transactionStartedAt = performance.now();
+    try {
+      return await driver.transaction(async (transaction) => {
+        if (observation) observation.transactionStarted = true;
+        return operation(transaction);
+      }, transactionOptions);
+    } finally {
+      finishTransaction(observation);
+    }
+  };
+  const outcome = (
+    result: AssessmentResult | TransitionResult<Resource>,
+  ): CompletedObservation["outcome"] => {
+    switch (result.status) {
+      case "allowed":
+        return "allowed";
+      case "committed":
+        return result.duplicate ? "duplicate" : "committed";
+      case "denied":
+        return "denied";
+      case "conflict":
+        return "conflict";
+      case "not-found":
+        return "not-found";
+      case "invalid-input":
+        return "invalid-input";
+      case "unknown-event":
+        return "unknown-event";
+      case "idempotency-conflict":
+        return "idempotency-conflict";
+    }
+  };
+  const completeObservation = (
+    observation: ObservationState | undefined,
+    result: AssessmentResult | TransitionResult<Resource>,
+  ) => {
+    if (!observation) return;
+    setPhase(observation, "result");
+    const completedOutcome = outcome(result);
+    const transitionId =
+      result.status === "committed" ? result.transition.id : undefined;
+    emit({
+      type: "interlock.operation.completed",
+      ...observation.base,
+      outcome: completedOutcome,
+      ...(transitionId === undefined ? {} : { transitionId }),
+      durationMs: duration(observation.startedAt),
+      ...(observation.transactionDurationMs === undefined
+        ? {}
+        : { transactionDurationMs: observation.transactionDurationMs }),
+      ...(completedOutcome === "committed" &&
+      observation.outboxMessageCount !== undefined
+        ? { outboxMessageCount: observation.outboxMessageCount }
+        : {}),
+    });
+  };
+  const failObservation = (
+    observation: ObservationState | undefined,
+    error: InterlockError,
+  ) => {
+    if (!observation) return;
+    emit({
+      type: "interlock.operation.failed",
+      ...observation.base,
+      code: error.code,
+      phase: observation.phase,
+      commitOutcome:
+        error.code === "INTERLOCK_COMMIT_OUTCOME_UNKNOWN"
+          ? "unknown"
+          : observation.transactionStarted
+            ? "not-committed"
+            : "not-started",
+      durationMs: duration(observation.startedAt),
+      ...(observation.transactionDurationMs === undefined
+        ? {}
+        : { transactionDurationMs: observation.transactionDurationMs }),
+    });
+  };
   const staticConsistency =
     typeof binding.consistency === "function"
       ? undefined
@@ -731,16 +949,36 @@ export function createInterlock<
   ): Promise<AssessmentResult> {
     const command = snapshotAssessmentRequest<Actor>(request);
     if ("status" in command) return command;
+    const observation = beginObservation(command, "assess");
+    try {
+      const result = await executeAssessment(command, observation);
+      completeObservation(observation, result);
+      return result;
+    } catch (error) {
+      const failure = unexpected(error);
+      failObservation(observation, failure);
+      throw failure;
+    }
+  }
+
+  async function executeAssessment(
+    command: SnapshotRequest<Actor>,
+    observation: ObservationState | undefined,
+  ): Promise<AssessmentResult> {
+    setPhase(observation, "request");
     const normalized = await normalizeEvent(command);
     if (!normalized.ok) return normalized.result;
     const advisoryOperation = operationFor<Actor, Schemas>(command, "advisory");
+    setPhase(observation, "transaction");
     const advisoryOptions = {
       ...resolveTransactionOptions(advisoryOperation),
       readOnly: true,
     };
-    try {
-      return await driver.transaction(async (transaction) => {
+    return runTransaction(
+      observation,
+      async (transaction) => {
         let resource;
+        setPhase(observation, "load-primary");
         try {
           resource = await binding.loadPrimary(transaction, advisoryOperation);
         } catch (error) {
@@ -750,7 +988,10 @@ export function createInterlock<
             error,
           );
         }
-        if (!resource) return { status: "not-found" };
+        if (!resource) {
+          setPhase(observation, "commit");
+          return { status: "not-found" } as const;
+        }
         const loaded = resourceSnapshot(resource, "Loaded resource");
         if (loaded.id !== command.id)
           throw new InterlockError(
@@ -772,6 +1013,7 @@ export function createInterlock<
             );
         };
         let context: Context;
+        setPhase(observation, "context");
         try {
           if (!binding.contextFactory) context = undefined as Context;
           else {
@@ -789,6 +1031,7 @@ export function createInterlock<
             error,
           );
         }
+        setPhase(observation, "assessment");
         const reason = await evaluate(
           normalized.event,
           resource,
@@ -798,7 +1041,7 @@ export function createInterlock<
           currentState,
           assertBoundary,
         );
-        return reason
+        const result: AssessmentResult = reason
           ? {
               status: "denied",
               event: command.event,
@@ -811,10 +1054,11 @@ export function createInterlock<
               currentState,
               targetState: normalized.event.to,
             };
-      }, advisoryOptions);
-    } catch (error) {
-      throw unexpected(error);
-    }
+        setPhase(observation, "commit");
+        return result;
+      },
+      advisoryOptions,
+    );
   }
 
   async function transition(
@@ -822,12 +1066,30 @@ export function createInterlock<
   ): Promise<TransitionResult<Resource>> {
     const command = snapshotTransitionRequest<Actor>(request);
     if ("status" in command) return command;
+    const observation = beginObservation(command, "transition");
+    try {
+      const result = await executeTransition(command, observation);
+      completeObservation(observation, result);
+      return result;
+    } catch (error) {
+      const failure = unexpected(error);
+      failObservation(observation, failure);
+      throw failure;
+    }
+  }
+
+  async function executeTransition(
+    command: SnapshotTransitionRequest<Actor>,
+    observation: ObservationState | undefined,
+  ): Promise<TransitionResult<Resource>> {
+    setPhase(observation, "request");
     const normalized = await normalizeTransition(command);
     if (!normalized.ok) return normalized.result;
     const authoritativeOperation = operationFor<Actor, Schemas>(
       command,
       "authoritative",
     );
+    setPhase(observation, "transaction");
     const authoritativeOptions = resolveTransactionOptions(
       authoritativeOperation,
     );
@@ -845,441 +1107,480 @@ export function createInterlock<
         "Idempotent transitions require read-committed isolation.",
       );
     try {
-      return await driver.transaction(async (transaction) => {
-        if (command.idempotency) {
-          let claim;
-          const createdAt = timestamp("Idempotency claim");
-          const createdTime = createdAt.getTime();
-          try {
-            claim = snapshotIdempotencyResult(
-              await driver.claimIdempotency(transaction, {
-                lifecycle: lifecycle.name,
-                resourceId: command.id,
+      return await runTransaction(
+        observation,
+        async (transaction) => {
+          if (command.idempotency) {
+            setPhase(observation, "idempotency");
+            let claim;
+            const createdAt = timestamp("Idempotency claim");
+            const createdTime = createdAt.getTime();
+            try {
+              claim = snapshotIdempotencyResult(
+                await driver.claimIdempotency(transaction, {
+                  lifecycle: lifecycle.name,
+                  resourceId: command.id,
+                  key: command.idempotency.key,
+                  fingerprint: normalized.fingerprint as string,
+                  createdAt,
+                }),
+              );
+            } catch (error) {
+              throw operational(
+                "INTERLOCK_PERSISTENCE_FAILED",
+                "Idempotency claim failed.",
+                error,
+              );
+            }
+            if (createdAt.getTime() !== createdTime)
+              throw new InterlockError(
+                "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
+                "Driver mutated the idempotency claim timestamp.",
+              );
+            if (claim.status === "conflict") {
+              const result = {
+                status: "idempotency-conflict",
                 key: command.idempotency.key,
-                fingerprint: normalized.fingerprint as string,
-                createdAt,
-              }),
-            );
-          } catch (error) {
-            throw operational(
-              "INTERLOCK_PERSISTENCE_FAILED",
-              "Idempotency claim failed.",
-              error,
-            );
+              } as const;
+              setPhase(observation, "commit");
+              return result;
+            }
+            if (claim.status === "duplicate") {
+              const result = {
+                status: "committed",
+                duplicate: true,
+                transition: snapshotDuplicateTransition(claim.transition, {
+                  lifecycle: lifecycle.name,
+                  resourceType: lifecycle.history.resourceType,
+                  resourceId: command.id as string,
+                  event: command.event as string,
+                  idempotencyKey: command.idempotency.key as string,
+                  requestFingerprint: normalized.fingerprint as string,
+                }),
+              } as const;
+              setPhase(observation, "commit");
+              return result;
+            }
           }
-          if (createdAt.getTime() !== createdTime)
-            throw new InterlockError(
-              "INTERLOCK_DRIVER_PROTOCOL_VIOLATION",
-              "Driver mutated the idempotency claim timestamp.",
-            );
-          if (claim.status === "conflict")
-            return {
-              status: "idempotency-conflict",
-              key: command.idempotency.key,
-            };
-          if (claim.status === "duplicate")
-            return {
-              status: "committed",
-              duplicate: true,
-              transition: snapshotDuplicateTransition(claim.transition, {
-                lifecycle: lifecycle.name,
-                resourceType: lifecycle.history.resourceType,
-                resourceId: command.id as string,
-                event: command.event as string,
-                idempotencyKey: command.idempotency.key as string,
-                requestFingerprint: normalized.fingerprint as string,
-              }),
-            };
-        }
 
-        let resource;
-        try {
-          resource = await binding.loadPrimary(
-            transaction,
-            authoritativeOperation,
-          );
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_PERSISTENCE_FAILED",
-            "Primary resource load failed.",
-            error,
-          );
-        }
-        if (!resource) rollback({ status: "not-found" });
-        const loaded = resourceSnapshot(resource, "Loaded resource");
-        if (loaded.id !== command.id)
-          throw new InterlockError(
-            "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
-            "Binding loaded a resource with the wrong identity.",
-          );
-        const resourceId = loaded.id;
-        const fromState = loaded.state;
-        const loadedVersion = loaded.version;
-        const assertBoundary = () => {
-          const current = resourceSnapshot(resource, "Loaded resource");
-          if (
-            current.id !== resourceId ||
-            current.state !== fromState ||
-            current.version !== loadedVersion
-          )
-            throw new InterlockError(
-              "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
-              "Lifecycle callbacks mutated the loaded resource identity, state, or version.",
-            );
-        };
-        if (
-          normalized.expectedVersion !== "use-loaded-version" &&
-          normalized.expectedVersion !== loadedVersion
-        )
-          rollback({
-            status: "conflict",
-            expected: normalized.expectedVersion,
-            actual: {
-              state: fromState,
-              version: loadedVersion,
-            },
-          });
-        const expectedVersion: VersionToken =
-          normalized.expectedVersion === "use-loaded-version"
-            ? loadedVersion
-            : normalized.expectedVersion;
-        let context: Context;
-        try {
-          if (!binding.contextFactory) context = undefined as Context;
-          else {
-            const created = binding.contextFactory.create(
+          let resource;
+          setPhase(observation, "load-primary");
+          try {
+            resource = await binding.loadPrimary(
               transaction,
               authoritativeOperation,
             );
-            const pending = settlement(created);
-            context = pending ? await pending : (created as Context);
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_PERSISTENCE_FAILED",
+              "Primary resource load failed.",
+              error,
+            );
           }
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
-            "Authoritative context creation failed.",
-            error,
+          if (!resource) rollback({ status: "not-found" });
+          const loaded = resourceSnapshot(resource, "Loaded resource");
+          if (loaded.id !== command.id)
+            throw new InterlockError(
+              "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+              "Binding loaded a resource with the wrong identity.",
+            );
+          const resourceId = loaded.id;
+          const fromState = loaded.state;
+          const loadedVersion = loaded.version;
+          const assertBoundary = () => {
+            const current = resourceSnapshot(resource, "Loaded resource");
+            if (
+              current.id !== resourceId ||
+              current.state !== fromState ||
+              current.version !== loadedVersion
+            )
+              throw new InterlockError(
+                "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+                "Lifecycle callbacks mutated the loaded resource identity, state, or version.",
+              );
+          };
+          if (
+            normalized.expectedVersion !== "use-loaded-version" &&
+            normalized.expectedVersion !== loadedVersion
+          )
+            rollback({
+              status: "conflict",
+              expected: normalized.expectedVersion,
+              actual: {
+                state: fromState,
+                version: loadedVersion,
+              },
+            });
+          const expectedVersion: VersionToken =
+            normalized.expectedVersion === "use-loaded-version"
+              ? loadedVersion
+              : normalized.expectedVersion;
+          let context: Context;
+          setPhase(observation, "context");
+          try {
+            if (!binding.contextFactory) context = undefined as Context;
+            else {
+              const created = binding.contextFactory.create(
+                transaction,
+                authoritativeOperation,
+              );
+              const pending = settlement(created);
+              context = pending ? await pending : (created as Context);
+            }
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+              "Authoritative context creation failed.",
+              error,
+            );
+          }
+          setPhase(observation, "assessment");
+          const reason = await evaluate(
+            normalized.event,
+            resource,
+            command.actor,
+            context,
+            normalized.input,
+            fromState,
+            assertBoundary,
           );
-        }
-        const reason = await evaluate(
-          normalized.event,
-          resource,
-          command.actor,
-          context,
-          normalized.input,
-          fromState,
-          assertBoundary,
-        );
-        if (reason)
-          rollback({
-            status: "denied",
-            event: command.event,
-            currentState: fromState,
-            targetState: normalized.event.to,
-            reason,
-          });
+          if (reason)
+            rollback({
+              status: "denied",
+              event: command.event,
+              currentState: fromState,
+              targetState: normalized.event.to,
+              reason,
+            });
 
-        const occurredAt = timestamp("Transition");
-        const occurredTime = occurredAt.getTime();
-        const assertClock = () => {
-          if (occurredAt.getTime() !== occurredTime)
+          setPhase(observation, "planning");
+          const occurredAt = timestamp("Transition");
+          const occurredTime = occurredAt.getTime();
+          const assertClock = () => {
+            if (occurredAt.getTime() !== occurredTime)
+              throw new InterlockError(
+                "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+                "Lifecycle callbacks mutated the transition clock.",
+              );
+          };
+          const transitionId = allocateId("Transition");
+          const projection = Object.freeze({
+            resource,
+            actor: command.actor,
+            context,
+            input: normalized.input as ParsedInputOf<Schemas[keyof Schemas]>,
+            operation: authoritativeOperation,
+            transitionId,
+            clock: Object.freeze({ occurredAt }),
+          });
+          let mutation;
+          try {
+            const projected = normalized.event.mutate?.(projection);
+            const pending =
+              projected === undefined ? undefined : settlement(projected);
+            mutation = pending ? await pending : projected;
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+              "Mutation projection failed.",
+              error,
+            );
+          }
+          assertBoundary();
+          assertClock();
+          let auditData;
+          try {
+            const projected = normalized.event.audit?.(projection);
+            const pending =
+              projected === undefined ? undefined : settlement(projected);
+            auditData = pending ? await pending : projected;
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+              "Audit projection failed.",
+              error,
+            );
+          }
+          assertBoundary();
+          assertClock();
+          if (auditData !== undefined)
+            auditData = snapshotJson(auditData, "Audit data");
+          let descriptors;
+          try {
+            const projected = normalized.event.outbox?.(projection);
+            const pending =
+              projected === undefined ? undefined : settlement(projected);
+            descriptors =
+              projected === undefined
+                ? []
+                : pending
+                  ? await pending
+                  : projected;
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+              "Outbox projection failed.",
+              error,
+            );
+          }
+          if (!Array.isArray(descriptors))
             throw new InterlockError(
               "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-              "Lifecycle callbacks mutated the transition clock.",
+              "Outbox projection must return an array.",
             );
-        };
-        const transitionId = allocateId("Transition");
-        const projection = Object.freeze({
-          resource,
-          actor: command.actor,
-          context,
-          input: normalized.input as ParsedInputOf<Schemas[keyof Schemas]>,
-          operation: authoritativeOperation,
-          transitionId,
-          clock: Object.freeze({ occurredAt }),
-        });
-        let mutation;
-        try {
-          const projected = normalized.event.mutate?.(projection);
-          const pending =
-            projected === undefined ? undefined : settlement(projected);
-          mutation = pending ? await pending : projected;
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-            "Mutation projection failed.",
-            error,
+          assertBoundary();
+          assertClock();
+          const plannedDescriptors = descriptors.map((descriptor) =>
+            snapshotOutboxDescriptor(descriptor, maxOutboxPayloadBytes),
           );
-        }
-        assertBoundary();
-        assertClock();
-        let auditData;
-        try {
-          const projected = normalized.event.audit?.(projection);
-          const pending =
-            projected === undefined ? undefined : settlement(projected);
-          auditData = pending ? await pending : projected;
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-            "Audit projection failed.",
-            error,
-          );
-        }
-        assertBoundary();
-        assertClock();
-        if (auditData !== undefined)
-          auditData = snapshotJson(auditData, "Audit data");
-        let descriptors;
-        try {
-          const projected = normalized.event.outbox?.(projection);
-          const pending =
-            projected === undefined ? undefined : settlement(projected);
-          descriptors =
-            projected === undefined ? [] : pending ? await pending : projected;
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-            "Outbox projection failed.",
-            error,
-          );
-        }
-        if (!Array.isArray(descriptors))
-          throw new InterlockError(
-            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-            "Outbox projection must return an array.",
-          );
-        assertBoundary();
-        assertClock();
-        const plannedDescriptors = descriptors.map((descriptor) =>
-          snapshotOutboxDescriptor(descriptor, maxOutboxPayloadBytes),
-        );
-        let actorIdentity;
-        try {
-          const projected = lifecycle.history.actor?.(command.actor);
-          const pending =
-            projected === undefined ? undefined : settlement(projected);
-          actorIdentity =
-            projected === undefined ? {} : pending ? await pending : projected;
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-            "History actor projection failed.",
-            error,
-          );
-        }
-        assertClock();
-        const { actorType, actorId } = snapshotActorIdentity(actorIdentity);
-        let metadata;
-        try {
-          const projected = lifecycle.history.metadata?.(
-            Object.freeze({
-              request: Object.freeze({
-                resourceId: command.id,
-                event: command.event,
-                ...(command.metadata === undefined
-                  ? {}
-                  : { metadata: command.metadata }),
+          let actorIdentity;
+          try {
+            const projected = lifecycle.history.actor?.(command.actor);
+            const pending =
+              projected === undefined ? undefined : settlement(projected);
+            actorIdentity =
+              projected === undefined
+                ? {}
+                : pending
+                  ? await pending
+                  : projected;
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+              "History actor projection failed.",
+              error,
+            );
+          }
+          assertClock();
+          const { actorType, actorId } = snapshotActorIdentity(actorIdentity);
+          let metadata;
+          try {
+            const projected = lifecycle.history.metadata?.(
+              Object.freeze({
+                request: Object.freeze({
+                  resourceId: command.id,
+                  event: command.event,
+                  ...(command.metadata === undefined
+                    ? {}
+                    : { metadata: command.metadata }),
+                }),
+                actor: command.actor,
+                resource,
               }),
-              actor: command.actor,
-              resource,
-            }),
-          );
-          const pending =
-            projected === undefined ? undefined : settlement(projected);
-          metadata = pending ? await pending : projected;
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
-            "History metadata projection failed.",
-            error,
-          );
-        }
-        assertBoundary();
-        assertClock();
-        if (metadata !== undefined)
-          metadata = snapshotJson(metadata, "History metadata");
+            );
+            const pending =
+              projected === undefined ? undefined : settlement(projected);
+            metadata = pending ? await pending : projected;
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_DEFINITION_PROTOCOL_VIOLATION",
+              "History metadata projection failed.",
+              error,
+            );
+          }
+          assertBoundary();
+          assertClock();
+          if (metadata !== undefined)
+            metadata = snapshotJson(metadata, "History metadata");
 
-        const outboxMessages: readonly OutboxInsert[] = plannedDescriptors.map(
-          (descriptor) => ({
-            id: allocateId("Outbox message"),
+          const outboxMessages: readonly OutboxInsert[] =
+            plannedDescriptors.map((descriptor) => ({
+              id: allocateId("Outbox message"),
+              lifecycle: lifecycle.name,
+              resourceType: lifecycle.history.resourceType,
+              resourceId,
+              transitionId,
+              topic: descriptor.topic,
+              ...(descriptor.key === undefined ? {} : { key: descriptor.key }),
+              payload: descriptor.payload,
+              createdAt: new Date(occurredTime),
+            }));
+          if (observation)
+            observation.outboxMessageCount = outboxMessages.length;
+
+          const previousVersion = loadedVersion;
+          const nextVersion = incrementVersion(previousVersion);
+          assertClock();
+          const transitionValue: TransitionRecord = {
+            id: transitionId,
             lifecycle: lifecycle.name,
             resourceType: lifecycle.history.resourceType,
-            resourceId,
-            transitionId,
-            topic: descriptor.topic,
-            ...(descriptor.key === undefined ? {} : { key: descriptor.key }),
-            payload: descriptor.payload,
-            createdAt: new Date(occurredTime),
-          }),
-        );
-
-        const previousVersion = loadedVersion;
-        const nextVersion = incrementVersion(previousVersion);
-        assertClock();
-        const transitionValue: TransitionRecord = {
-          id: transitionId,
-          lifecycle: lifecycle.name,
-          resourceType: lifecycle.history.resourceType,
-          resourceId: command.id,
-          event: command.event,
-          fromState,
-          toState: normalized.event.to,
-          previousVersion,
-          nextVersion,
-          occurredAt: new Date(occurredTime),
-          ...(actorType === undefined ? {} : { actorType }),
-          ...(actorId === undefined ? {} : { actorId }),
-          ...(auditData === undefined ? {} : { auditData }),
-          ...(metadata === undefined ? {} : { metadata }),
-          ...(command.correlationId === undefined
-            ? {}
-            : { correlationId: command.correlationId }),
-          ...(command.causationId === undefined
-            ? {}
-            : { causationId: command.causationId }),
-          ...(command.idempotency
-            ? {
-                idempotencyKey: command.idempotency.key,
-                requestFingerprint: normalized.fingerprint as string,
-              }
-            : {}),
-          ...(lifecycle.definitionVersion === undefined
-            ? {}
-            : { definitionVersion: lifecycle.definitionVersion }),
-        };
-        const writeOperation = Object.freeze({
-          ...authoritativeOperation,
-          mutation,
-        }) as WriteOperation<Actor, MutationMap<Events>>;
-        let applied;
-        try {
-          applied = snapshotPrimaryResult<Resource>(
-            await binding.applyPrimary(transaction, {
-              resource,
-              fromState,
-              toState: normalized.event.to,
-              expectedVersion,
-              nextVersion,
-              operation: writeOperation,
-            }),
-          );
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_PERSISTENCE_FAILED",
-            "Primary resource update failed.",
-            error,
-          );
-        }
-        if (applied.status === "not-found") rollback({ status: "not-found" });
-        if (applied.status === "conflict") {
-          rollback({
-            status: "conflict",
-            expected: normalized.expectedVersion,
-            ...(applied.actual === undefined ? {} : { actual: applied.actual }),
-          });
-        }
-        const updated = resourceSnapshot(applied.resource, "Applied resource");
-        if (
-          updated.id !== resourceId ||
-          updated.state !== normalized.event.to ||
-          updated.version !== nextVersion
-        )
-          throw new InterlockError(
-            "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
-            "Binding returned an applied resource with unexpected identity, state, or version.",
-          );
-        try {
-          await driver.insertTransition(transaction, {
-            ...transitionValue,
+            resourceId: command.id,
+            event: command.event,
+            fromState,
+            toState: normalized.event.to,
+            previousVersion,
+            nextVersion,
             occurredAt: new Date(occurredTime),
-          });
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_HISTORY_FAILED",
-            "Transition history insertion failed.",
-            error,
-          );
-        }
-        try {
-          await binding.applyRelated?.(transaction, {
-            previousResource: resource,
-            updatedResource: applied.resource,
-            operation: writeOperation,
-            transitionId,
-            occurredAt: new Date(occurredTime),
-          });
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_PERSISTENCE_FAILED",
-            "Related resource update failed.",
-            error,
-          );
-        }
-        try {
-          await driver.insertOutbox(transaction, outboxMessages);
-        } catch (error) {
-          throw operational(
-            "INTERLOCK_OUTBOX_FAILED",
-            "Outbox insertion failed.",
-            error,
-          );
-        }
-        if (command.idempotency) {
+            ...(actorType === undefined ? {} : { actorType }),
+            ...(actorId === undefined ? {} : { actorId }),
+            ...(auditData === undefined ? {} : { auditData }),
+            ...(metadata === undefined ? {} : { metadata }),
+            ...(command.correlationId === undefined
+              ? {}
+              : { correlationId: command.correlationId }),
+            ...(command.causationId === undefined
+              ? {}
+              : { causationId: command.causationId }),
+            ...(command.idempotency
+              ? {
+                  idempotencyKey: command.idempotency.key,
+                  requestFingerprint: normalized.fingerprint as string,
+                }
+              : {}),
+            ...(lifecycle.definitionVersion === undefined
+              ? {}
+              : { definitionVersion: lifecycle.definitionVersion }),
+          };
+          const writeOperation = Object.freeze({
+            ...authoritativeOperation,
+            mutation,
+          }) as WriteOperation<Actor, MutationMap<Events>>;
+          let applied;
+          setPhase(observation, "primary-write");
           try {
-            await driver.completeIdempotency(transaction, {
-              lifecycle: lifecycle.name,
-              resourceId: command.id,
-              key: command.idempotency.key,
+            applied = snapshotPrimaryResult<Resource>(
+              await binding.applyPrimary(transaction, {
+                resource,
+                fromState,
+                toState: normalized.event.to,
+                expectedVersion,
+                nextVersion,
+                operation: writeOperation,
+              }),
+            );
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_PERSISTENCE_FAILED",
+              "Primary resource update failed.",
+              error,
+            );
+          }
+          if (applied.status === "not-found") rollback({ status: "not-found" });
+          if (applied.status === "conflict") {
+            rollback({
+              status: "conflict",
+              expected: normalized.expectedVersion,
+              ...(applied.actual === undefined
+                ? {}
+                : { actual: applied.actual }),
+            });
+          }
+          const updated = resourceSnapshot(
+            applied.resource,
+            "Applied resource",
+          );
+          if (
+            updated.id !== resourceId ||
+            updated.state !== normalized.event.to ||
+            updated.version !== nextVersion
+          )
+            throw new InterlockError(
+              "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+              "Binding returned an applied resource with unexpected identity, state, or version.",
+            );
+          setPhase(observation, "history");
+          try {
+            await driver.insertTransition(transaction, {
+              ...transitionValue,
+              occurredAt: new Date(occurredTime),
+            });
+          } catch (error) {
+            throw operational(
+              "INTERLOCK_HISTORY_FAILED",
+              "Transition history insertion failed.",
+              error,
+            );
+          }
+          setPhase(observation, "related-writes");
+          try {
+            await binding.applyRelated?.(transaction, {
+              previousResource: resource,
+              updatedResource: applied.resource,
+              operation: writeOperation,
               transitionId,
-              completedAt: new Date(occurredTime),
+              occurredAt: new Date(occurredTime),
             });
           } catch (error) {
             throw operational(
               "INTERLOCK_PERSISTENCE_FAILED",
-              "Idempotency completion failed.",
+              "Related resource update failed.",
               error,
             );
           }
-        }
-        let hydrated = applied.resource;
-        if (binding.hydrateBeforeCommit) {
+          setPhase(observation, "outbox");
           try {
-            hydrated = await binding.hydrateBeforeCommit(transaction, {
-              resource: applied.resource,
-              operation: writeOperation,
-            });
+            await driver.insertOutbox(transaction, outboxMessages);
           } catch (error) {
             throw operational(
-              "INTERLOCK_PERSISTENCE_FAILED",
-              "In-transaction hydration failed.",
+              "INTERLOCK_OUTBOX_FAILED",
+              "Outbox insertion failed.",
               error,
             );
           }
-        }
-        const hydratedSnapshot = resourceSnapshot(
-          hydrated,
-          "Hydrated resource",
-        );
-        if (
-          hydratedSnapshot.id !== resourceId ||
-          hydratedSnapshot.state !== normalized.event.to ||
-          hydratedSnapshot.version !== nextVersion
-        )
-          throw new InterlockError(
-            "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
-            "Binding returned a hydrated resource with unexpected identity, state, or version.",
+          if (command.idempotency) {
+            setPhase(observation, "idempotency-completion");
+            try {
+              await driver.completeIdempotency(transaction, {
+                lifecycle: lifecycle.name,
+                resourceId: command.id,
+                key: command.idempotency.key,
+                transitionId,
+                completedAt: new Date(occurredTime),
+              });
+            } catch (error) {
+              throw operational(
+                "INTERLOCK_PERSISTENCE_FAILED",
+                "Idempotency completion failed.",
+                error,
+              );
+            }
+          }
+          let hydrated = applied.resource;
+          if (binding.hydrateBeforeCommit) {
+            setPhase(observation, "hydration");
+            try {
+              hydrated = await binding.hydrateBeforeCommit(transaction, {
+                resource: applied.resource,
+                operation: writeOperation,
+              });
+            } catch (error) {
+              throw operational(
+                "INTERLOCK_PERSISTENCE_FAILED",
+                "In-transaction hydration failed.",
+                error,
+              );
+            }
+          } else {
+            setPhase(observation, "result");
+          }
+          const hydratedSnapshot = resourceSnapshot(
+            hydrated,
+            "Hydrated resource",
           );
-        return {
-          status: "committed",
-          duplicate: false,
-          resource: hydrated,
-          transition: transitionValue,
-        };
-      }, authoritativeOptions);
+          if (
+            hydratedSnapshot.id !== resourceId ||
+            hydratedSnapshot.state !== normalized.event.to ||
+            hydratedSnapshot.version !== nextVersion
+          )
+            throw new InterlockError(
+              "INTERLOCK_BINDING_PROTOCOL_VIOLATION",
+              "Binding returned a hydrated resource with unexpected identity, state, or version.",
+            );
+          const result = {
+            status: "committed",
+            duplicate: false,
+            resource: hydrated,
+            transition: transitionValue,
+          } as const;
+          setPhase(observation, "commit");
+          return result;
+        },
+        authoritativeOptions,
+      );
     } catch (error) {
       if (error instanceof RollbackOutcome) return error.result;
-      throw unexpected(error);
+      throw error;
     }
   }
 

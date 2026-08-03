@@ -17,6 +17,17 @@ const approvedActions = new Set([
   "pnpm/action-setup@v6",
 ]);
 
+function markdownFiles(directory) {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    return entry.isDirectory()
+      ? markdownFiles(path)
+      : entry.name.endsWith(".md")
+        ? [path]
+        : [];
+  });
+}
+
 export function checkRelease(root) {
   const manifests = Object.keys(packages).map((name) =>
     JSON.parse(readFileSync(join(root, "packages", name, "package.json"))),
@@ -45,6 +56,28 @@ export function checkRelease(root) {
     changelog,
     new RegExp(`^## ${version.replaceAll(".", "\\.")} — ${releaseDate}$`, "m"),
     `CHANGELOG.md must contain the exact ${version} release heading.`,
+  );
+
+  const documentation = [
+    join(root, "README.md"),
+    ...markdownFiles(join(root, "docs")),
+    ...Object.keys(packages).map((name) =>
+      join(root, "packages", name, "README.md"),
+    ),
+    join(root, "examples", "postgres-node", "README.md"),
+    join(root, "examples", "reference-app", "README.md"),
+  ]
+    .map((file) => readFileSync(file, "utf8"))
+    .join("\n");
+  assert.doesNotMatch(
+    documentation,
+    /@interlock(?:\/|`|\s)/,
+    "Documentation must use the authoritative @jajego package scope.",
+  );
+  assert.doesNotMatch(
+    documentation,
+    /dx-findings\.md/i,
+    "Documentation must not link removed development artifacts.",
   );
 
   for (const manifest of manifests) {

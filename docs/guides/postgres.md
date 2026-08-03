@@ -57,3 +57,11 @@ tables are not upgraded in place.
 Interlock inserts transition history before `applyRelated()`, so related tables
 may use an immediate foreign key to `interlock_transition_history(id)`. Every
 row remains uncommitted until the whole transition succeeds.
+
+Operational telemetry is application-owned. Use the optional observer for
+operation outcomes, phases, and timing, and query the database or outbox worker
+for queue depth and oldest-pending age. Resource, transition, operation,
+correlation, causation, actor, and idempotency identifiers must not become
+unbounded metric labels. A failed history insertion may increment a
+low-cardinality counter keyed by lifecycle and event, but failed attempts must
+not be inserted into transition history. See [Observability](observability.md).

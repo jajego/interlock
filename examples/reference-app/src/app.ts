@@ -1,4 +1,8 @@
-import { isInterlockError, type TransitionResult } from "@jajego/interlock";
+import {
+  isInterlockError,
+  type InterlockObserver,
+  type TransitionResult,
+} from "@jajego/interlock";
 import Fastify, {
   type FastifyReply,
   type FastifyRequest,
@@ -11,6 +15,10 @@ import {
   type CommandOptions,
 } from "./domain/permits/service.js";
 import type { PermitResource } from "./domain/permits/types.js";
+import {
+  createInterlockObserver,
+  ReferenceMetrics,
+} from "./interlock/observer.js";
 
 function object(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -100,6 +108,8 @@ export function createApp(
     bodyLimit?: number;
     observeStatement?: StatementObserver;
     observeTransaction?(timing: TransactionTiming): void;
+    metrics?: ReferenceMetrics;
+    interlockObserver?: InterlockObserver;
   } = {},
 ) {
   const app = Fastify({
@@ -109,6 +119,7 @@ export function createApp(
     connectionTimeout: 5_000,
     keepAliveTimeout: 5_000,
   });
+  const metrics = options.metrics ?? new ReferenceMetrics();
   const service = createPermitService(database, {
     ...(options.observeStatement
       ? { observeStatement: options.observeStatement }
@@ -116,6 +127,8 @@ export function createApp(
     ...(options.observeTransaction
       ? { observeTransaction: options.observeTransaction }
       : {}),
+    observer:
+      options.interlockObserver ?? createInterlockObserver(app.log, metrics),
   });
 
   const errorChain = (error: Error) => {

@@ -139,7 +139,7 @@ export function executorFixture(options = {}) {
     new Date("2026-01-01T00:00:00.000Z"),
     new Date("2026-01-01T00:00:01.000Z"),
   ];
-  const subject = createInterlock({
+  const clientOptions = {
     lifecycle: defineLifecycle()(definition),
     driver: options.driver ?? driver,
     binding: options.bindingFactory?.(binding) ?? binding,
@@ -151,7 +151,13 @@ export function executorFixture(options = {}) {
       }),
     ids: options.ids ?? (() => "transition-1"),
     maxOutboxPayloadBytes: options.maxOutboxPayloadBytes,
-  });
+    ...(Object.hasOwn(options, "observer")
+      ? { observer: options.observer }
+      : {}),
+  };
+  const subject = createInterlock(
+    options.clientOptions?.(clientOptions) ?? clientOptions,
+  );
   return {
     subject,
     order,

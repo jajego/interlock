@@ -10,6 +10,10 @@ export {
   type InterlockClient,
 } from "./executor.js";
 export {
+  type InterlockObservation,
+  type InterlockObserver,
+} from "./observer.js";
+export {
   type AssessmentRequestFor,
   type TransitionRequestFor,
 } from "./request.js";

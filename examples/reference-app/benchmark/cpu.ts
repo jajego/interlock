@@ -13,7 +13,14 @@ import { environment, measure } from "./report.js";
 type Resource = { id: string; state: string; version: string };
 type Transaction = object;
 
-function client(options: { guards: number; outbox: number; bytes: number }) {
+type ObserverKind = "none" | "noop" | "counter" | "promise";
+
+function client(options: {
+  guards: number;
+  outbox: number;
+  bytes: number;
+  observer?: ObserverKind;
+}) {
   const payload = { value: "x".repeat(Math.max(0, options.bytes - 12)) };
   const lifecycle = defineLifecycle<Resource>()({
     name: "cpu",
@@ -59,6 +66,19 @@ function client(options: { guards: number; outbox: number; bytes: number }) {
       void messages;
     },
   };
+  let observed = 0;
+  const observer =
+    options.observer === "noop"
+      ? { observe: () => {} }
+      : options.observer === "counter"
+        ? {
+            observe: () => {
+              observed += 1;
+            },
+          }
+        : options.observer === "promise"
+          ? { observe: () => Promise.resolve() }
+          : undefined;
   const subject = createInterlock({
     lifecycle,
     driver,
@@ -77,7 +97,9 @@ function client(options: { guards: number; outbox: number; bytes: number }) {
       let id = 0;
       return () => `id-${++id}`;
     })(),
+    ...(observer ? { observer } : {}),
   });
+  void observed;
   return subject;
 }
 
@@ -109,6 +131,25 @@ for (const [name, guards, outbox, bytes, idempotent] of scenarios) {
         if (result.status !== "committed") throw new Error(result.status);
       },
     })),
+  );
+}
+for (const observer of ["none", "noop", "counter", "promise"] as const) {
+  const subject = client({ guards: 0, outbox: 0, bytes: 0, observer });
+  reports.push(
+    await measure(
+      `observer-${observer}`,
+      async () => ({
+        run: async () => {
+          const result = await subject.transition({
+            id: "resource",
+            event: "move",
+            expectedVersion: "1",
+          });
+          if (result.status !== "committed") throw new Error(result.status);
+        },
+      }),
+      { warmups: 100, iterations: 1_000, rounds: 5 },
+    ),
   );
 }
 const duplicate = client({ guards: 0, outbox: 1, bytes: 0 });

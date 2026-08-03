@@ -192,3 +192,32 @@ PostgreSQL and conformance tarballs remained 8,885 and 6,964 bytes. No runtime
 dependency was added. The benchmark harness now passes its isolated schema to
 `PostgresDriver`; before that fix, the documented command attempted to write
 Interlock artifacts to `public` and could not produce a valid baseline.
+
+## Observer microbenchmark
+
+The reference CPU benchmark compares identical non-idempotent transitions with
+no observer, a no-op observer, a counter observer, and an observer returning an
+already-resolved promise. It uses 100 warmups and five rounds of 1,000
+operations, with no PostgreSQL, network, filesystem, or telemetry backend work.
+
+One Windows x64 run on Node.js 26.5.0 measured:
+
+| Observer         | p50 ms | p95 ms | Mean ms | Mean change from none |
+| ---------------- | -----: | -----: | ------: | --------------------: |
+| None             | 0.0069 | 0.0092 |  0.0080 |                     - |
+| No-op            | 0.0086 | 0.0145 |  0.0104 |                  +30% |
+| Counter          | 0.0086 | 0.0099 |  0.0095 |                  +20% |
+| Resolved promise | 0.0083 | 0.0117 |  0.0094 |                  +18% |
+
+The absolute measured mean difference was 0.0014-0.0024 ms per operation. This
+is a local microbenchmark, not evidence about network telemetry. It confirms
+that observation is not free and that the no-observer path remains the fastest
+default on mean. The counter and promise ordering falls within microbenchmark
+noise and should not be treated as a general ranking.
+
+The final Node.js 26.5.0 reference-app HTTP benchmark enabled the lightweight
+structured observer and measured 55.55 ms p50, 155.23 ms p95, 67.15 ms mean, and
+86.26 concurrency-10 operations/second with 100/100 successes. The direct
+database comparison remained observer-disabled and measured 40.45 ms p50 and
+52.99 ms mean for Interlock. Mixed changes versus the earlier loopback run do
+not isolate observer impact; the focused CPU benchmark above does.

@@ -1,4 +1,8 @@
-import { createInterlock, type ClientFor } from "@jajego/interlock";
+import {
+  createInterlock,
+  type ClientFor,
+  type InterlockObserver,
+} from "@jajego/interlock";
 import { randomUUID } from "node:crypto";
 import type {
   Database,
@@ -23,6 +27,7 @@ export function createPermitService(
   options: {
     observeStatement?: StatementObserver;
     observeTransaction?(timing: TransactionTiming): void;
+    observer?: InterlockObserver;
   } = {},
 ) {
   const observe = options.observeStatement;
@@ -35,6 +40,7 @@ export function createPermitService(
         ? { observeTransaction: options.observeTransaction }
         : {}),
     }),
+    ...(options.observer ? { observer: options.observer } : {}),
   });
   const common = (options: CommandOptions) => ({
     id: options.id,

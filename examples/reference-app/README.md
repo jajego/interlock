@@ -4,8 +4,8 @@ A committed production-style permit-approval backend showing Interlock in a
 Fastify, Prisma, PostgreSQL 16 application. It demonstrates multitenant
 authentication, typed lifecycle commands, optimistic concurrency, idempotency,
 history, related writes, transactional outbox insertion, and a deliberately
-limited local outbox worker. It is an external-consumer and DX evaluation, not a
-production starter kit or published Prisma adapter.
+limited local outbox worker. It validates external-consumer integration; it is
+not a production starter kit or published Prisma adapter.
 
 ```mermaid
 flowchart LR
@@ -109,6 +109,14 @@ Operational failures return a stable Interlock code, generic message, and
 request ID. Full errors and cause chains are written only to structured server
 logs. Expected denials retain public details while private denial fields remain
 hidden.
+
+The service also installs a real `InterlockObserver`. It writes frozen
+start/completed/failed summaries through Fastify's structured logger and records
+only low-cardinality lifecycle, event, mode, outcome, code, and phase dimensions
+in a tiny in-memory demonstration collector. It never logs request input,
+actors, resources, idempotency keys, fingerprints, or outbox payloads.
+Production applications should replace the collector with their existing metrics
+adapter, not add IDs as metric labels.
 
 Prisma needs a custom driver because Interlock must use the same interactive
 transaction handle for application and artifact writes. Runtime code never opens

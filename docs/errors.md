@@ -25,3 +25,10 @@ an operational failure or a broken integration contract.
 Use `isInterlockError(error)` and switch on `error.code`. Only retry errors that
 the table explicitly identifies as retryable, and always retry the complete
 command rather than an individual write.
+
+When configured, `InterlockObserver` reports thrown failures as
+`interlock.operation.failed` with the same stable code, a protocol phase, and a
+`not-started`, `not-committed`, or `unknown` commit outcome. The observation
+never includes the error, message, cause, stack, SQL, or connection data. Log
+the separately thrown error only under the application's security policy. See
+the [observability guide](guides/observability.md).

@@ -20,8 +20,9 @@ requests at concurrency 10 and divides completed requests by wall-clock time.
 
 - `benchmark:cpu` uses an in-memory driver and binding. It covers normalization,
   Standard Schema parsing, authorization, guards, projections, JSON snapshots,
-  protocol validation, outbox fan-out, and duplicate replay without database or
-  HTTP work.
+  protocol validation, outbox fan-out, duplicate replay, and no-observer,
+  no-op-observer, counter-observer, and resolved-promise-observer paths without
+  database or HTTP work.
 - `benchmark:database` alternates Interlock-first and handwritten-first order by
   round. Both paths use the same input schema, active membership and assignment
   locks, authorization, state/version CAS, history columns, audit, metadata,
@@ -30,7 +31,8 @@ requests at concurrency 10 and divides completed requests by wall-clock time.
   boundaries; there is no meaningful handwritten equivalent for that work.
 - `benchmark:http` includes parsing, database-backed header authentication,
   service handling, pool wait, transaction work, and response serialization.
-  Permit setup and cleanup remain outside timing.
+  Permit setup and cleanup remain outside timing. The HTTP reference path uses
+  its normal structured observer; the direct database comparison does not.
 
 Statement observers execute at every application and Interlock persistence call
 inside measured operations. Counts exclude migrations, seed, fixture setup,
@@ -73,3 +75,28 @@ Representative CPU-only p50/p95 results were 0.0129/0.0283 ms for a minimal
 transition, 0.0238/0.0752 ms for five outbox descriptors, 0.0783/0.1302 ms for a
 64 KiB JSON snapshot, and 0.0078/0.0144 ms for duplicate replay. Each used 150
 samples, so p99 is intentionally omitted.
+
+The focused observer probe used 100 warmups and five rounds of 1,000 operations.
+No observer, no-op, counter, and already-resolved-promise observers measured
+respective p50/p95/mean values of 0.0069/0.0092/0.0080, 0.0086/0.0145/0.0104,
+0.0086/0.0099/0.0095, and 0.0083/0.0117/0.0094 ms on Node.js 26.5.0. No network
+or filesystem telemetry was included.
+
+## Observer-enabled rerun — Node.js 26.5.0
+
+The final HTTP benchmark used the reference app's normal structured observer.
+The direct database comparison constructs the permit service without an observer
+and therefore remained observer-disabled.
+
+| Path                                 | Observer | p50      | p95       | Mean     |
+| ------------------------------------ | -------- | -------- | --------- | -------- |
+| Interlock direct database comparison | disabled | 40.45 ms | 115.53 ms | 52.99 ms |
+| Handwritten database comparison      | n/a      | 44.80 ms | 152.65 ms | 64.47 ms |
+| HTTP submit                          | enabled  | 55.55 ms | 155.23 ms | 67.15 ms |
+
+The observer-enabled HTTP run completed 100/100 concurrency-10 requests with no
+errors at 86.26 measured operations/second. Against the earlier local run, mean
+latency improved, p50 increased, p95 decreased, and measured throughput
+decreased. Those conflicting movements are within the already documented Docker
+loopback variance and do not isolate observer cost. The CPU-only probe is the
+appropriate focused overhead comparison.

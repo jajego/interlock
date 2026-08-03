@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import {
   cpSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -20,9 +21,23 @@ function fixture() {
     "CHANGELOG.md",
     ".changeset",
     ".github",
-    "packages",
+    "docs",
   ])
     cpSync(join(root, name), join(directory, name), { recursive: true });
+  for (const packageName of ["core", "postgres", "conformance"]) {
+    const target = join(directory, "packages", packageName);
+    mkdirSync(target, { recursive: true });
+    for (const file of ["package.json", "README.md"])
+      cpSync(join(root, "packages", packageName, file), join(target, file));
+  }
+  for (const example of ["postgres-node", "reference-app"]) {
+    const target = join(directory, "examples", example);
+    mkdirSync(target, { recursive: true });
+    cpSync(
+      join(root, "examples", example, "README.md"),
+      join(target, "README.md"),
+    );
+  }
   return directory;
 }
 
@@ -81,4 +96,13 @@ test("unexpected public package names are rejected", () =>
     manifest.name = "@example/interlock";
     writeFileSync(file, JSON.stringify(manifest));
     assert.throws(() => checkRelease(directory), /@jajego publish list/);
+  }));
+
+test("stale package scopes and removed DX links are rejected", () =>
+  withFixture((directory) => {
+    writeFileSync(
+      join(directory, "README.md"),
+      "Install `@interlock/core` and see dx-findings.md.\n",
+    );
+    assert.throws(() => checkRelease(directory), /authoritative @jajego/);
   }));
