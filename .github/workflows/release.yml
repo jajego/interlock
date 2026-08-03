@@ -39,7 +39,7 @@ jobs:
       - run: pnpm --filter @jajego/interlock-reference-app generate
       - run: pnpm --filter @jajego/interlock-reference-app migrate
       - run: pnpm --filter @jajego/interlock-reference-app seed
-            - run: pnpm --filter @jajego/interlock-reference-app build
+      - run: pnpm --filter @jajego/interlock-reference-app build
       - run: pnpm --filter @jajego/interlock-reference-app test
       - run: pnpm --filter @jajego/interlock-reference-app verify:packed
 
