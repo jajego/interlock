@@ -1,5 +1,5 @@
 {
-  "name": "@interlock/core",
+  "name": "@jajego/interlock",
   "version": "0.1.0-alpha.0",
   "description": "Type-safe lifecycle definitions and atomic transition executor contracts.",
   "type": "module",

@@ -33,14 +33,14 @@ jobs:
       - run: node --test integration/core.test.mjs
       - run: pnpm test:postgres
       - run: pnpm pack:check
-      - run: pnpm --filter @interlock/prisma-postgres-spike generate
-      - run: pnpm --filter @interlock/prisma-postgres-spike start
-      - run: pnpm --filter @interlock/reference-app generate
-      - run: pnpm --filter @interlock/reference-app migrate
-      - run: pnpm --filter @interlock/reference-app seed
-      - run: pnpm --filter @interlock/reference-app build
-      - run: pnpm --filter @interlock/reference-app test
-      - run: pnpm --filter @interlock/reference-app verify:packed
+      - run: pnpm --filter @jajego/interlock-prisma-postgres-spike generate
+      - run: pnpm --filter @jajego/interlock-prisma-postgres-spike start
+      - run: pnpm --filter @jajego/interlock-reference-app generate
+      - run: pnpm --filter @jajego/interlock-reference-app migrate
+      - run: pnpm --filter @jajego/interlock-reference-app seed
+      - run: pnpm --filter @jajego/interlock-reference-app build
+      - run: pnpm --filter @jajego/interlock-reference-app test
+      - run: pnpm --filter @jajego/interlock-reference-app verify:packed
   node-22:
     runs-on: ubuntu-latest
     timeout-minutes: 10

@@ -17,7 +17,7 @@ export type InterlockErrorCode =
   | "INTERLOCK_VERSION_EXHAUSTED"
   | "INTERLOCK_CANCELLED";
 
-const interlockErrorBrand = Symbol.for("@interlock/core/InterlockError");
+const interlockErrorBrand = Symbol.for("@jajego/interlock/InterlockError");
 
 /**
  * An operational failure or protocol violation thrown by Interlock.
@@ -40,7 +40,7 @@ export class InterlockError extends Error {
 /**
  * The supported runtime check for Interlock failures. Unlike checking
  * `instanceof InterlockError`, it remains reliable across duplicated physical
- * copies of `@interlock/core` within the same JavaScript realm.
+ * copies of `@jajego/interlock` within the same JavaScript realm.
  */
 export function isInterlockError(value: unknown): value is InterlockError {
   if (!(value instanceof Error)) return false;

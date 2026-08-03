@@ -11,7 +11,7 @@
 **Status:** Design proposal
 **Document version:** 0.5
 **Working project name:** Interlock
-**Initial packages:** `@interlock/core`, `@interlock/postgres`, and `@interlock/conformance`
+**Initial packages:** `@jajego/interlock`, `@jajego/interlock-postgres`, and `@jajego/interlock-conformance`
 **Initial database target:** PostgreSQL
 **Recommended license:** Apache-2.0
 
@@ -441,7 +441,7 @@ import {
   allow,
   defineLifecycle,
   deny,
-} from "@interlock/core";
+} from "@jajego/interlock";
 import { z } from "zod";
 
 const applicationLifecycle = defineLifecycle({
@@ -1517,15 +1517,15 @@ examples/
   prisma-postgres-spike/
 ```
 
-### `@interlock/core`
+### `@jajego/interlock`
 
 Lifecycle definitions, type inference, schema normalization, request normalization, assessment, planning, executor, result types, denial types, transaction-driver interfaces, resource-binding interfaces, and history/idempotency projection contracts.
 
-### `@interlock/postgres`
+### `@jajego/interlock-postgres`
 
 Reference `pg` transaction driver, Interlock-owned schema, same-transaction idempotency, history persistence, outbox persistence, and PostgreSQL error normalization.
 
-### `@interlock/conformance`
+### `@jajego/interlock-conformance`
 
 Driver conformance, binding verification, executor integration fixtures, concurrency helpers, and fault injection.
 

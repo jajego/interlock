@@ -4,7 +4,7 @@ import {
   defineEvent,
   defineLifecycle,
   deny,
-} from "@interlock/core";
+} from "@jajego/interlock";
 import * as v from "valibot";
 import type { PermitActor, PermitContext, PermitResource } from "./types.js";
 

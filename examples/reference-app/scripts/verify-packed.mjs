@@ -49,12 +49,18 @@ try {
   const manifest = JSON.parse(
     readFileSync(join(consumer, "package.json"), "utf8"),
   );
-  for (const name of ["core", "postgres"]) {
+  const packages = {
+    core: "@jajego/interlock",
+    postgres: "@jajego/interlock-postgres",
+  };
+  const tarballPrefix = (packageName) =>
+    `${packageName.slice(1).replace("/", "-")}-`;
+  for (const packageName of Object.values(packages)) {
     const tarball = readdirSync(join(root, ".packs")).find((file) =>
-      file.startsWith(`interlock-${name}-`),
+      file.startsWith(tarballPrefix(packageName)),
     );
     assert.ok(tarball);
-    manifest.dependencies[`@interlock/${name}`] =
+    manifest.dependencies[packageName] =
       `file:${join(root, ".packs", tarball)}`;
   }
   writeFileSync(
@@ -66,7 +72,7 @@ try {
     [
       "packages: []",
       "overrides:",
-      `  "@interlock/core": "${manifest.dependencies["@interlock/core"].replaceAll("\\", "/")}"`,
+      `  "@jajego/interlock": "${manifest.dependencies["@jajego/interlock"].replaceAll("\\", "/")}"`,
       "allowBuilds:",
       '  "@prisma/client": true',
       '  "@prisma/engines": true',

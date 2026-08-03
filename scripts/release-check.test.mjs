@@ -73,3 +73,12 @@ test("mismatched public package versions are rejected", () =>
     writeFileSync(file, JSON.stringify(manifest));
     assert.throws(() => checkRelease(directory), /versions must match/);
   }));
+
+test("unexpected public package names are rejected", () =>
+  withFixture((directory) => {
+    const file = join(directory, "packages", "core", "package.json");
+    const manifest = JSON.parse(readFileSync(file, "utf8"));
+    manifest.name = "@example/interlock";
+    writeFileSync(file, JSON.stringify(manifest));
+    assert.throws(() => checkRelease(directory), /@jajego publish list/);
+  }));

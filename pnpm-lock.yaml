@@ -37,10 +37,10 @@ importers:
 
   examples/postgres-node:
     dependencies:
-      "@interlock/core":
+      "@jajego/interlock":
         specifier: workspace:*
         version: link:../../packages/core
-      "@interlock/postgres":
+      "@jajego/interlock-postgres":
         specifier: workspace:*
         version: link:../../packages/postgres
       pg:
@@ -49,7 +49,7 @@ importers:
 
   examples/prisma-postgres-spike:
     dependencies:
-      "@interlock/core":
+      "@jajego/interlock":
         specifier: workspace:*
         version: link:../../packages/core
       "@prisma/adapter-pg":
@@ -68,10 +68,10 @@ importers:
 
   examples/reference-app:
     dependencies:
-      "@interlock/core":
+      "@jajego/interlock":
         specifier: workspace:*
         version: link:../../packages/core
-      "@interlock/postgres":
+      "@jajego/interlock-postgres":
         specifier: workspace:*
         version: link:../../packages/postgres
       "@prisma/adapter-pg":
@@ -108,7 +108,7 @@ importers:
 
   packages/conformance:
     dependencies:
-      "@interlock/core":
+      "@jajego/interlock":
         specifier: workspace:^
         version: link:../core
 
@@ -116,7 +116,7 @@ importers:
 
   packages/postgres:
     dependencies:
-      "@interlock/core":
+      "@jajego/interlock":
         specifier: workspace:^
         version: link:../core
       pg:

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isInterlockError } from "@interlock/core";
+import { isInterlockError } from "@jajego/interlock";
 import { createPermitService } from "../src/domain/permits/service.js";
 import { actors, counts, permit, reset, testDatabase } from "./helpers.js";
 

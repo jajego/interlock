@@ -1,4 +1,4 @@
-import type { BindingFor, RelatedDataConsistency } from "@interlock/core";
+import type { BindingFor, RelatedDataConsistency } from "@jajego/interlock";
 import type { Permit } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import type { StatementObserver, Transaction } from "../../db.js";

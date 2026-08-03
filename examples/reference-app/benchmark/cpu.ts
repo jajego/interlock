@@ -7,7 +7,7 @@ import {
   type OutboxInsert,
   type TransactionDriver,
   type TransitionRecord,
-} from "@interlock/core";
+} from "@jajego/interlock";
 import { environment, measure } from "./report.js";
 
 type Resource = { id: string; state: string; version: string };

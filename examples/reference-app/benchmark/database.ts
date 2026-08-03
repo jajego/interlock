@@ -1,4 +1,4 @@
-import { canonicalHash, type OutboxInsert } from "@interlock/core";
+import { canonicalHash, type OutboxInsert } from "@jajego/interlock";
 import { randomUUID } from "node:crypto";
 import * as v from "valibot";
 import { loadConfig } from "../src/config.js";

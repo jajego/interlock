@@ -36,7 +36,7 @@ domain transition a single transaction boundary: the version-checked primary
 update, related writes, append-only history, idempotency outcome, and outbox
 records commit together or roll back together. The API is intentionally small,
 TypeScript-first, and bring-your-own-SQL. Install with
-`npm install @interlock/core@next @interlock/postgres@next pg`.
+`npm install @jajego/interlock@next @jajego/interlock-postgres@next pg`.
 
 ## Draft: short post
 

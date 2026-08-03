@@ -5,7 +5,7 @@ import type {
   TransactionDriver,
   TransactionOptions,
   VersionToken,
-} from "@interlock/core";
+} from "@jajego/interlock";
 
 /**
  * Isolated, resettable application fixture consumed by

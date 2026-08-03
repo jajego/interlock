@@ -9,7 +9,7 @@ import {
   type TransactionOptions,
   type TransitionRecord,
   type VersionToken,
-} from "@interlock/core";
+} from "@jajego/interlock";
 import type { Pool, PoolClient, QueryResult, QueryResultRow } from "pg";
 
 /** Minimal active `pg` transaction/client surface exposed to bindings. */
@@ -190,7 +190,7 @@ function rowToTransition(row: Record<string, unknown>): TransitionRecord {
 
 /**
  * PostgreSQL transaction driver backed by a caller-supplied `pg` pool. Apply
- * `@interlock/postgres/migration.sql` to the configured schema before use. The
+ * `@jajego/interlock-postgres/migration.sql` to the configured schema before use. The
  * driver owns begin/commit/rollback, but every binding query uses the supplied
  * active transaction handle and must not commit independently. Recognized
  * PostgreSQL transient failures are normalized to stable Interlock error codes.

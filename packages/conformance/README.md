@@ -1,7 +1,7 @@
-# `@interlock/conformance`
+# `@jajego/interlock-conformance`
 
 ```sh
-npm install --save-dev @interlock/conformance@next
+npm install --save-dev @jajego/interlock-conformance@next
 ```
 
 Exports `verifyTransactionDriver()`, `verifyResourceBinding()`, and
@@ -14,7 +14,7 @@ Run them against real infrastructure before advertising an adapter as
 compatible.
 
 ```ts
-import { verifyTransactionDriver } from "@interlock/conformance";
+import { verifyTransactionDriver } from "@jajego/interlock-conformance";
 
 await verifyTransactionDriver({
   driver,
@@ -32,7 +32,7 @@ await verifyTransactionDriver({
 
 Use the binding and executor verifiers the same way: provide real setup,
 operations, and observable snapshots. The package uses Node built-ins and
-`@interlock/core`; no test framework is required. Node.js 22.14+ is supported.
+`@jajego/interlock`; no test framework is required. Node.js 22.14+ is supported.
 
 The committed
 [Fastify + Prisma reference application](https://github.com/jajego/interlock/tree/main/examples/reference-app)

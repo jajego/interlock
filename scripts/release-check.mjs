@@ -4,7 +4,11 @@ import { dirname, join, resolve } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 
-const packageNames = ["core", "postgres", "conformance"];
+const packages = {
+  core: "@jajego/interlock",
+  postgres: "@jajego/interlock-postgres",
+  conformance: "@jajego/interlock-conformance",
+};
 const releaseDate = "2026-08-02";
 const repository = "git+https://github.com/jajego/interlock.git";
 const approvedActions = new Set([
@@ -14,8 +18,13 @@ const approvedActions = new Set([
 ]);
 
 export function checkRelease(root) {
-  const manifests = packageNames.map((name) =>
+  const manifests = Object.keys(packages).map((name) =>
     JSON.parse(readFileSync(join(root, "packages", name, "package.json"))),
+  );
+  assert.deepEqual(
+    manifests.map((manifest) => manifest.name),
+    Object.values(packages),
+    "Release package names must match the @jajego publish list.",
   );
   const versions = manifests.map((manifest) => manifest.version);
   const version = versions[0];

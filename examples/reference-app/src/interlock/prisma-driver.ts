@@ -8,8 +8,8 @@ import {
   type TransactionOptions,
   type TransitionRecord,
   type VersionToken,
-} from "@interlock/core";
-import { normalizePostgresError } from "@interlock/postgres";
+} from "@jajego/interlock";
+import { normalizePostgresError } from "@jajego/interlock-postgres";
 import { Prisma, type PrismaClient } from "@prisma/client";
 import type {
   StatementObserver,

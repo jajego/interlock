@@ -6,7 +6,7 @@ import {
   parseVersionToken,
   type OutboxInsert,
   type TransitionRecord,
-} from "@interlock/core";
+} from "@jajego/interlock";
 import { createPermitService } from "../src/domain/permits/service.js";
 import { PrismaInterlockDriver } from "../src/interlock/prisma-driver.js";
 import { actors, permit, reset, testDatabase } from "./helpers.js";

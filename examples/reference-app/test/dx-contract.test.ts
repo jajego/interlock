@@ -6,9 +6,9 @@ import { loadConfig } from "../src/config.js";
 
 test("reference app imports only public package exports", () => {
   assert.equal(permitLifecycle.name, "permit");
-  assert.match(import.meta.resolve("@interlock/core"), /dist\/index\.js$/);
+  assert.match(import.meta.resolve("@jajego/interlock"), /dist\/index\.js$/);
   assert.match(
-    import.meta.resolve("@interlock/postgres/migration.sql"),
+    import.meta.resolve("@jajego/interlock-postgres/migration.sql"),
     /001_interlock\.sql$/,
   );
 });

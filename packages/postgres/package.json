@@ -1,5 +1,5 @@
 {
-  "name": "@interlock/postgres",
+  "name": "@jajego/interlock-postgres",
   "version": "0.1.0-alpha.0",
   "description": "Reference PostgreSQL transaction driver for Interlock.",
   "type": "module",
@@ -43,7 +43,7 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@interlock/core": "workspace:^"
+    "@jajego/interlock": "workspace:^"
   },
   "peerDependencies": {
     "pg": ">=8.16.3 <9"

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { isInterlockError, type TransactionDriver } from "@interlock/core";
+import { isInterlockError, type TransactionDriver } from "@jajego/interlock";
 import { failOperation, type FaultOperation } from "./faults.js";
 
 /**

@@ -207,7 +207,7 @@ export type IdempotencyClaimResult =
  * transaction. Every method call belongs to the transaction opened by
  * `transaction()`; implementations must not commit independently and must
  * preserve the documented atomicity and error protocol. Adapter authors can
- * verify implementations with `@interlock/conformance`.
+ * verify implementations with `@jajego/interlock-conformance`.
  */
 export interface TransactionDriver<Transaction> {
   /**

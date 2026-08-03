@@ -7,7 +7,9 @@ const pool = new Pool({ connectionString: loadConfig().databaseUrl, max: 1 });
 const client = await pool.connect();
 try {
   const migration = await readFile(
-    fileURLToPath(import.meta.resolve("@interlock/postgres/migration.sql")),
+    fileURLToPath(
+      import.meta.resolve("@jajego/interlock-postgres/migration.sql"),
+    ),
     "utf8",
   );
   await client.query('CREATE SCHEMA IF NOT EXISTS "interlock"');

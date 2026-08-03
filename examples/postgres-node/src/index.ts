@@ -8,8 +8,8 @@ import {
   type BindingFor,
   type InputSchema,
   type TransactionDriver,
-} from "@interlock/core";
-import { PostgresDriver, type PgTransaction } from "@interlock/postgres";
+} from "@jajego/interlock";
+import { PostgresDriver, type PgTransaction } from "@jajego/interlock-postgres";
 import { Pool } from "pg";
 import { pathToFileURL } from "node:url";
 

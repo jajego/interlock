@@ -1,4 +1,4 @@
-import { createInterlock, type ClientFor } from "@interlock/core";
+import { createInterlock, type ClientFor } from "@jajego/interlock";
 import { randomUUID } from "node:crypto";
 import type {
   Database,

@@ -1,10 +1,10 @@
-# `@interlock/postgres`
+# `@jajego/interlock-postgres`
 
 Reference `pg` transaction driver plus the versioned Interlock idempotency,
 history, and outbox schema. Apply the exported `migration.sql` before use.
 
 ```sh
-pnpm add @interlock/core@next @interlock/postgres@next pg
+pnpm add @jajego/interlock@next @jajego/interlock-postgres@next pg
 ```
 
 Applications create the `pg` `Pool` and pass it to `new PostgresDriver(pool)`;
@@ -14,13 +14,15 @@ Applications create the `pg` `Pool` and pass it to `new PostgresDriver(pool)`;
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { Pool } from "pg";
-import { PostgresDriver } from "@interlock/postgres";
+import { PostgresDriver } from "@jajego/interlock-postgres";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const driver = new PostgresDriver(pool, { schema: "interlock" });
 
 const sql = await readFile(
-  fileURLToPath(import.meta.resolve("@interlock/postgres/migration.sql")),
+  fileURLToPath(
+    import.meta.resolve("@jajego/interlock-postgres/migration.sql"),
+  ),
   "utf8",
 );
 const migrationPool = new Pool({ connectionString: process.env.DATABASE_URL });

@@ -24,20 +24,32 @@ const pnpm = (arguments_, options) =>
   execFileSync(process.execPath, [pnpmCli, ...arguments_], options);
 
 const packages = {
-  core: [
-    "errors",
-    "executor",
-    "index",
-    "json",
-    "lifecycle",
-    "protocol",
-    "request",
-    "types",
-    "version",
-  ],
-  postgres: ["driver", "index"],
-  conformance: ["binding", "driver", "executor", "faults", "index"],
+  core: {
+    name: "@jajego/interlock",
+    modules: [
+      "errors",
+      "executor",
+      "index",
+      "json",
+      "lifecycle",
+      "protocol",
+      "request",
+      "types",
+      "version",
+    ],
+  },
+  postgres: {
+    name: "@jajego/interlock-postgres",
+    modules: ["driver", "index"],
+  },
+  conformance: {
+    name: "@jajego/interlock-conformance",
+    modules: ["binding", "driver", "executor", "faults", "index"],
+  },
 };
+
+const tarballPrefix = (packageName) =>
+  `${packageName.slice(1).replace("/", "-")}-`;
 
 function filesBelow(directory, prefix = "") {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -50,7 +62,7 @@ function filesBelow(directory, prefix = "") {
 
 function expectedFiles(name) {
   const files = new Set(["LICENSE", "README.md", "package.json"]);
-  for (const module of packages[name])
+  for (const module of packages[name].modules)
     for (const suffix of ["d.ts", "js"]) files.add(`dist/${module}.${suffix}`);
   if (name === "postgres") files.add("migrations/001_interlock.sql");
   return [...files].sort();
@@ -90,9 +102,9 @@ try {
       type: "module",
       dependencies: {
         ...Object.fromEntries(
-          Object.keys(packages).map((name) => [
-            `@interlock/${name}`,
-            `file:${tarballs.find((file) => file.includes(`interlock-${name}-`))}`,
+          Object.values(packages).map((package_) => [
+            package_.name,
+            `file:${tarballs.find((file) => file.includes(tarballPrefix(package_.name)))}`,
           ]),
         ),
         pg: "^8.16.3",
@@ -106,7 +118,7 @@ try {
   );
   writeFileSync(
     join(temporary, "pnpm-workspace.yaml"),
-    `packages: []\noverrides:\n  '@interlock/core': 'file:${tarballs.find((file) => file.includes("interlock-core-"))}'\n`,
+    `packages: []\noverrides:\n  '@jajego/interlock': 'file:${tarballs.find((file) => file.includes(tarballPrefix(packages.core.name)))}'\n`,
   );
   pnpm(["install", "--ignore-scripts", "--config.node-linker=hoisted"], {
     cwd: temporary,
@@ -117,14 +129,14 @@ try {
     `import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
-await Promise.all([import("@interlock/core"), import("@interlock/postgres"), import("@interlock/conformance")]);
-const migration = await readFile(fileURLToPath(import.meta.resolve("@interlock/postgres/migration.sql")), "utf8");
+await Promise.all([import("@jajego/interlock"), import("@jajego/interlock-postgres"), import("@jajego/interlock-conformance")]);
+const migration = await readFile(fileURLToPath(import.meta.resolve("@jajego/interlock-postgres/migration.sql")), "utf8");
 assert.match(migration, /CREATE TABLE IF NOT EXISTS interlock_transition_history/);
 `,
   );
   writeFileSync(
     join(temporary, "verify.ts"),
-    'import { PostgresDriver } from "@interlock/postgres";\nimport { Pool } from "pg";\nnew PostgresDriver(new Pool());\n',
+    'import { PostgresDriver } from "@jajego/interlock-postgres";\nimport { Pool } from "pg";\nnew PostgresDriver(new Pool());\n',
   );
   copyFileSync(
     join(root, "examples", "postgres-node", "src", "index.ts"),
@@ -151,10 +163,15 @@ assert.match(migration, /CREATE TABLE IF NOT EXISTS interlock_transition_history
   });
   pnpm(["exec", "tsc"], { cwd: temporary, stdio: "inherit" });
   for (const name of Object.keys(packages)) {
-    const directory = join(temporary, "node_modules", "@interlock", name);
+    const directory = join(
+      temporary,
+      "node_modules",
+      "@jajego",
+      packages[name].name.split("/")[1],
+    );
     assert.match(
       readFileSync(join(directory, "README.md"), "utf8"),
-      /Interlock|@interlock/,
+      /Interlock|@jajego/,
     );
     assert.match(
       readFileSync(join(directory, "LICENSE"), "utf8"),
@@ -164,7 +181,13 @@ assert.match(migration, /CREATE TABLE IF NOT EXISTS interlock_transition_history
   }
   const postgresManifest = JSON.parse(
     readFileSync(
-      join(temporary, "node_modules", "@interlock", "postgres", "package.json"),
+      join(
+        temporary,
+        "node_modules",
+        "@jajego",
+        "interlock-postgres",
+        "package.json",
+      ),
       "utf8",
     ),
   );

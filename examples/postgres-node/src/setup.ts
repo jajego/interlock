@@ -8,7 +8,9 @@ try {
   await client.query("DROP SCHEMA IF EXISTS interlock_example CASCADE");
   await client.query("CREATE SCHEMA interlock_example");
   const migration = await readFile(
-    fileURLToPath(import.meta.resolve("@interlock/postgres/migration.sql")),
+    fileURLToPath(
+      import.meta.resolve("@jajego/interlock-postgres/migration.sql"),
+    ),
     "utf8",
   );
   const schema = await readFile(

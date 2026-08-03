@@ -34,11 +34,11 @@ Bash:
 ```sh
 docker compose up -d --wait
 export DATABASE_URL=postgres://interlock:interlock@localhost:54329/interlock_reference
-pnpm --filter @interlock/reference-app generate
-pnpm --filter @interlock/reference-app migrate
-pnpm --filter @interlock/reference-app seed
-pnpm --filter @interlock/reference-app build
-pnpm --filter @interlock/reference-app start
+pnpm --filter @jajego/interlock-reference-app generate
+pnpm --filter @jajego/interlock-reference-app migrate
+pnpm --filter @jajego/interlock-reference-app seed
+pnpm --filter @jajego/interlock-reference-app build
+pnpm --filter @jajego/interlock-reference-app start
 ```
 
 PowerShell:
@@ -46,11 +46,11 @@ PowerShell:
 ```powershell
 docker compose up -d --wait
 $env:DATABASE_URL='postgres://interlock:interlock@localhost:54329/interlock_reference'
-pnpm --filter @interlock/reference-app generate
-pnpm --filter @interlock/reference-app migrate
-pnpm --filter @interlock/reference-app seed
-pnpm --filter @interlock/reference-app build
-pnpm --filter @interlock/reference-app start
+pnpm --filter @jajego/interlock-reference-app generate
+pnpm --filter @jajego/interlock-reference-app migrate
+pnpm --filter @jajego/interlock-reference-app seed
+pnpm --filter @jajego/interlock-reference-app build
+pnpm --filter @jajego/interlock-reference-app start
 ```
 
 Run one transition:
@@ -74,12 +74,12 @@ versions and reused keys `409`, missing resources `404`, and operational
 ## Commands
 
 ```sh
-pnpm --filter @interlock/reference-app test
-pnpm --filter @interlock/reference-app worker
-pnpm --filter @interlock/reference-app benchmark:cpu
-pnpm --filter @interlock/reference-app benchmark:database
-pnpm --filter @interlock/reference-app benchmark:http
-pnpm --filter @interlock/reference-app verify:packed
+pnpm --filter @jajego/interlock-reference-app test
+pnpm --filter @jajego/interlock-reference-app worker
+pnpm --filter @jajego/interlock-reference-app benchmark:cpu
+pnpm --filter @jajego/interlock-reference-app benchmark:database
+pnpm --filter @jajego/interlock-reference-app benchmark:http
+pnpm --filter @jajego/interlock-reference-app verify:packed
 ```
 
 Tests reset application and Interlock tables in the configured test database.

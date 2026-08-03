@@ -17,7 +17,7 @@ import {
   type TransactionOptions,
   type TransitionRecord,
   type VersionToken,
-} from "@interlock/core";
+} from "@jajego/interlock";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
 

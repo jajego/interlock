@@ -1,5 +1,5 @@
 {
-  "name": "@interlock/reference-app",
+  "name": "@jajego/interlock-reference-app",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,8 +16,8 @@
     "verify:packed": "node scripts/verify-packed.mjs"
   },
   "dependencies": {
-    "@interlock/core": "workspace:*",
-    "@interlock/postgres": "workspace:*",
+    "@jajego/interlock": "workspace:*",
+    "@jajego/interlock-postgres": "workspace:*",
     "@prisma/adapter-pg": "^7.9.1",
     "@prisma/client": "^7.9.1",
     "fastify": "^5.11.0",

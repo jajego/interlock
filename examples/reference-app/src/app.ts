@@ -1,4 +1,4 @@
-import { isInterlockError, type TransitionResult } from "@interlock/core";
+import { isInterlockError, type TransitionResult } from "@jajego/interlock";
 import Fastify, {
   type FastifyReply,
   type FastifyRequest,

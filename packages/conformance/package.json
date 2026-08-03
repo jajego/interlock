@@ -1,5 +1,5 @@
 {
-  "name": "@interlock/conformance",
+  "name": "@jajego/interlock-conformance",
   "version": "0.1.0-alpha.0",
   "description": "Executable driver, binding, and executor verification suites for Interlock integrations.",
   "type": "module",
@@ -40,7 +40,7 @@
   ],
   "sideEffects": false,
   "dependencies": {
-    "@interlock/core": "workspace:^"
+    "@jajego/interlock": "workspace:^"
   },
   "scripts": {
     "build": "tsc -b"

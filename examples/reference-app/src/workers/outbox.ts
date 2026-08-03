@@ -1,4 +1,4 @@
-import { InterlockError } from "@interlock/core";
+import { InterlockError } from "@jajego/interlock";
 import { randomUUID } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { loadConfig } from "../config.js";

@@ -14,12 +14,12 @@ outbox publisher, retry worker, or statechart engine.
 
 ## Packages
 
-- `@interlock/core` defines lifecycles, typed requests and results, protocol
+- `@jajego/interlock` defines lifecycles, typed requests and results, protocol
   validation, and transaction sequencing. It has no runtime dependencies.
-- `@interlock/postgres` supplies the reference `pg` transaction driver and SQL
-  migration. Applications supply the pool.
-- `@interlock/conformance` supplies executable driver, binding, and rollback
-  checks using Node.js built-ins and core.
+- `@jajego/interlock-postgres` supplies the reference `pg` transaction driver
+  and SQL migration. Applications supply the pool.
+- `@jajego/interlock-conformance` supplies executable driver, binding, and
+  rollback checks using Node.js built-ins and core.
 
 ## Maintained sources of truth
 

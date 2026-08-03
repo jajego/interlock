@@ -3,7 +3,7 @@ import type {
   OutboxInsert,
   TransactionDriver,
   TransitionRecord,
-} from "@interlock/core";
+} from "@jajego/interlock";
 
 /**
  * Isolated, resettable persistence fixture consumed by

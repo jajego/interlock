@@ -1,10 +1,10 @@
 {
-  "name": "@interlock/example-postgres-node",
+  "name": "@jajego/interlock-example-postgres-node",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@interlock/core": "workspace:*",
-    "@interlock/postgres": "workspace:*",
+    "@jajego/interlock": "workspace:*",
+    "@jajego/interlock-postgres": "workspace:*",
     "pg": "^8.16.3"
   },
   "scripts": {

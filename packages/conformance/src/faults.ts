@@ -1,4 +1,4 @@
-import type { TransactionDriver } from "@interlock/core";
+import type { TransactionDriver } from "@jajego/interlock";
 
 /** Persistence operation that can be replaced with an injected test failure. */
 export type FaultOperation = "history" | "outbox" | "idempotency-completion";

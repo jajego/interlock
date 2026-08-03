@@ -1,7 +1,7 @@
 # Interlock
 
 [![CI](https://github.com/jajego/interlock/actions/workflows/ci.yml/badge.svg)](https://github.com/jajego/interlock/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/@interlock/core?label=npm)](https://www.npmjs.com/package/@interlock/core)
+[![npm](https://img.shields.io/npm/v/@jajego/interlock?label=npm)](https://www.npmjs.com/package/@jajego/interlock)
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 **Type-safe, atomic lifecycle transitions for PostgreSQL.**
@@ -35,7 +35,8 @@ where a partial write would be expensive or difficult to repair.
   ordinary application tables.
 - **Round-trip conscious:** transactional-outbox rows are inserted in batches
   without skipping protocol validation.
-- **Small footprint:** `@interlock/core` has zero external runtime dependencies.
+- **Small footprint:** `@jajego/interlock` has zero external runtime
+  dependencies.
 
 | Tool                | Best fit                                                                |
 | ------------------- | ----------------------------------------------------------------------- |
@@ -47,7 +48,7 @@ where a partial write would be expensive or difficult to repair.
 ## Install
 
 ```sh
-npm install @interlock/core@next @interlock/postgres@next pg
+npm install @jajego/interlock@next @jajego/interlock-postgres@next pg
 ```
 
 Your application owns the `pg` `Pool`. The PostgreSQL package imports `pg` only
@@ -106,7 +107,7 @@ import {
   defineEvent,
   defineLifecycle,
   deny,
-} from "@interlock/core";
+} from "@jajego/interlock";
 
 interface Order {
   id: string;
@@ -183,8 +184,8 @@ RETURNING *;
 Create the client with your binding and pool:
 
 ```ts
-import { createInterlock } from "@interlock/core";
-import { PostgresDriver } from "@interlock/postgres";
+import { createInterlock } from "@jajego/interlock";
+import { PostgresDriver } from "@jajego/interlock-postgres";
 import { Pool } from "pg";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
@@ -345,15 +346,18 @@ replay of an already committed key.
 
 ## PostgreSQL setup
 
-`@interlock/postgres/migration.sql` creates the idempotency, transition-history,
-and outbox tables in the active schema. Resolve and read the public SQL export:
+`@jajego/interlock-postgres/migration.sql` creates the idempotency,
+transition-history, and outbox tables in the active schema. Resolve and read the
+public SQL export:
 
 ```ts
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 const migration = await readFile(
-  fileURLToPath(import.meta.resolve("@interlock/postgres/migration.sql")),
+  fileURLToPath(
+    import.meta.resolve("@jajego/interlock-postgres/migration.sql"),
+  ),
   "utf8",
 );
 ```
@@ -376,11 +380,11 @@ an unproved concurrency algorithm.
 
 ## Packages
 
-| Package                                          | Purpose                                                                 |
-| ------------------------------------------------ | ----------------------------------------------------------------------- |
-| [`@interlock/core`](packages/core)               | Lifecycle definitions, typed commands, execution, and public contracts. |
-| [`@interlock/postgres`](packages/postgres)       | Reference `pg` transaction driver and SQL migration.                    |
-| [`@interlock/conformance`](packages/conformance) | Executable verification for drivers, bindings, and atomic rollback.     |
+| Package                                                 | Purpose                                                                 |
+| ------------------------------------------------------- | ----------------------------------------------------------------------- |
+| [`@jajego/interlock`](packages/core)                    | Lifecycle definitions, typed commands, execution, and public contracts. |
+| [`@jajego/interlock-postgres`](packages/postgres)       | Reference `pg` transaction driver and SQL migration.                    |
+| [`@jajego/interlock-conformance`](packages/conformance) | Executable verification for drivers, bindings, and atomic rollback.     |
 
 ## Examples and guides
 

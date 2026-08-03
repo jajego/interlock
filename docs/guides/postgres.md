@@ -1,8 +1,9 @@
 # PostgreSQL
 
-Apply `@interlock/postgres/migration.sql`, keep application tables application
-owned, and implement a binding whose conditional update checks both state and
-version with `RETURNING`. Use `TEST_DATABASE_URL` for integration tests.
+Apply `@jajego/interlock-postgres/migration.sql`, keep application tables
+application owned, and implement a binding whose conditional update checks both
+state and version with `RETURNING`. Use `TEST_DATABASE_URL` for integration
+tests.
 
 Resource IDs must be globally unique within each lifecycle. If application IDs
 are tenant-local, namespace them before passing them to Interlock or use

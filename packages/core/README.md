@@ -1,10 +1,10 @@
-# `@interlock/core`
+# `@jajego/interlock`
 
 Defines typed lifecycle events and executes one atomic transition through an
 application binding and transaction driver. It has no runtime dependencies.
 
 ```sh
-npm install @interlock/core@next
+npm install @jajego/interlock@next
 ```
 
 ```ts
@@ -15,7 +15,7 @@ import {
   type BindingFor,
   type InputSchema,
   type TransactionDriver,
-} from "@interlock/core";
+} from "@jajego/interlock";
 
 interface Order {
   id: string;
